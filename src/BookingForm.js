@@ -66,9 +66,40 @@ export default function BookingForm({ triggerRefresh, token }) {
     <div style={styles.container}>
       <h2 style={styles.heading}>Schedule a Palapa Booking</h2>
       <form onSubmit={handleSubmit} style={styles.form}>
-        {Object.keys(form).map(field => (
+        <div style={styles.nameRow}>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>First Name</label>
+            <input
+              name="first"
+              value={form.first}
+              onChange={handleChange}
+              placeholder="First Name"
+              style={{
+                ...styles.input,
+                ...(conflictFields.includes('first') ? styles.conflict : {})
+              }}
+              required
+            />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Last Name</label>
+            <input
+              name="last"
+              value={form.last}
+              onChange={handleChange}
+              placeholder="Last Name"
+              style={{
+                ...styles.input,
+                ...(conflictFields.includes('last') ? styles.conflict : {})
+              }}
+              required
+            />
+          </div>
+        </div>
+
+        {['hut_number', 'room', 'email', 'phone'].map((field) => (
           <div key={field} style={styles.inputGroup}>
-            <label style={styles.label}>{field.replace('_', ' ').toUpperCase()}</label>
+            <label style={styles.label}>{field.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</label>
             <input
               name={field}
               value={form[field]}
@@ -82,6 +113,7 @@ export default function BookingForm({ triggerRefresh, token }) {
             />
           </div>
         ))}
+
         {error && <div style={styles.error}>{error}</div>}
         {success && <div style={styles.success}>{success}</div>}
         <button type="submit" style={styles.button} disabled={submitting}>
@@ -94,15 +126,15 @@ export default function BookingForm({ triggerRefresh, token }) {
 
 const styles = {
   container: {
-    background: '#f4f4f4',
+    background: '#f9f9f9',
     padding: '2rem',
-    maxWidth: '500px',
+    maxWidth: '600px',
     margin: '2rem auto',
-    borderRadius: '8px',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+    borderRadius: '10px',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.06)'
   },
   heading: {
-    marginBottom: '1rem',
+    marginBottom: '1.5rem',
     textAlign: 'center',
     color: '#333'
   },
@@ -111,39 +143,47 @@ const styles = {
     flexDirection: 'column',
     gap: '1rem'
   },
+  nameRow: {
+    display: 'flex',
+    gap: '1rem'
+  },
   inputGroup: {
     display: 'flex',
-    flexDirection: 'column'
+    flexDirection: 'column',
+    flex: 1
   },
   label: {
     marginBottom: '0.25rem',
-    fontWeight: 'bold'
+    fontWeight: '600'
   },
   input: {
-    padding: '0.5rem',
+    padding: '0.6rem',
     fontSize: '1rem',
-    borderRadius: '4px',
+    borderRadius: '6px',
     border: '1px solid #ccc'
   },
   conflict: {
     borderColor: '#b00020',
-    backgroundColor: '#ffe6e6'
+    backgroundColor: '#ffeaea'
   },
   button: {
-    padding: '0.75rem',
+    padding: '0.8rem',
     fontSize: '1rem',
     backgroundColor: '#007bff',
     color: '#fff',
     border: 'none',
-    borderRadius: '4px',
-    cursor: 'pointer'
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontWeight: 'bold'
   },
   error: {
     color: '#b00020',
-    fontWeight: 'bold'
+    fontWeight: 'bold',
+    textAlign: 'center'
   },
   success: {
     color: '#0a972f',
-    fontWeight: 'bold'
+    fontWeight: 'bold',
+    textAlign: 'center'
   }
 };

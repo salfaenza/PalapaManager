@@ -4,8 +4,8 @@ import {
   Routes,
   Route,
   Navigate,
-  Link,
-  useLocation
+  useLocation,
+  Link
 } from 'react-router-dom';
 import { GoogleOAuthProvider, GoogleLogin, googleLogout } from '@react-oauth/google';
 import { jwtDecode } from 'jwt-decode';
@@ -83,7 +83,6 @@ function App() {
 
   return (
     <Router>
-      <NavBar userEmail={userEmail} userRole={userRole} handleLogout={handleLogout} />
       <Routes>
         <Route
           path="/"
@@ -94,57 +93,40 @@ function App() {
             </div>
           }
         />
-        <Route
-          path="/dashboard"
-          element={
-            <div style={styles.page}>
-              <BookingsTable refreshTrigger={refreshKey} token={token} />
-            </div>
-          }
-        />
         {userRole === 'admin' && (
           <Route
             path="/admin/users"
-            element={
-              <div style={styles.page}>
-                <UserManagement token={token} />
-              </div>
-            }
+            element={<div style={styles.page}><UserManagement token={token} /></div>}
           />
         )}
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
+      <BottomNav userRole={userRole} handleLogout={handleLogout} />
     </Router>
   );
 }
 
-function NavBar({ userEmail, userRole, handleLogout }) {
+function BottomNav({ userRole, handleLogout }) {
   const location = useLocation();
   const isActive = (path) => location.pathname === path;
 
   return (
-    <nav style={navStyles.bar}>
-      <div style={navStyles.left}>
-        <span style={navStyles.logo}>🏝 Palapa Booker</span>
-        <Link to="/" style={isActive("/") ? navStyles.active : navStyles.link}>Home</Link>
-        <Link to="/dashboard" style={isActive("/dashboard") ? navStyles.active : navStyles.link}>Dashboard</Link>
-        {userRole === 'admin' && (
-          <Link to="/admin/users" style={isActive("/admin/users") ? navStyles.active : navStyles.link}>Users</Link>
-        )}
-      </div>
-      <div style={navStyles.right}>
-        <span>{userEmail}</span>
-        <button onClick={handleLogout} style={navStyles.logout}>Logout</button>
-      </div>
+    <nav style={bottomNav.bar}>
+      <Link to="/" style={isActive("/") ? bottomNav.active : bottomNav.link}>Book</Link>
+      {userRole === 'admin' && (
+        <Link to="/admin/users" style={isActive("/admin/users") ? bottomNav.active : bottomNav.link}>Users</Link>
+      )}
+      <button onClick={handleLogout} style={bottomNav.logout}>Logout</button>
     </nav>
   );
 }
 
 const styles = {
   page: {
-    padding: '2rem',
+    padding: '1rem',
     backgroundColor: '#f9f9f9',
     minHeight: '100vh',
+    paddingBottom: '4rem'
   },
   centered: {
     display: 'flex',
@@ -156,31 +138,23 @@ const styles = {
   }
 };
 
-const navStyles = {
+const bottomNav = {
   bar: {
     display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '1rem 2rem',
+    justifyContent: 'space-around',
+    position: 'fixed',
+    bottom: 0,
+    left: 0,
+    width: '100%',
     backgroundColor: '#007bff',
-    color: '#fff',
-    position: 'sticky',
-    top: 0,
-    zIndex: 999
-  },
-  left: {
-    display: 'flex',
-    gap: '1.5rem',
-    alignItems: 'center'
-  },
-  logo: {
-    fontWeight: 'bold',
-    fontSize: '1.2rem'
+    padding: '0.75rem 1rem',
+    borderTop: '1px solid #ccc',
+    zIndex: 1000
   },
   link: {
     color: '#fff',
-    textDecoration: 'none',
     fontSize: '1rem',
+    textDecoration: 'none',
     opacity: 0.85
   },
   active: {
@@ -188,17 +162,11 @@ const navStyles = {
     textDecoration: 'underline',
     fontWeight: 'bold'
   },
-  right: {
-    display: 'flex',
-    gap: '1rem',
-    alignItems: 'center'
-  },
   logout: {
-    backgroundColor: '#dc3545',
+    backgroundColor: 'transparent',
     color: '#fff',
     border: 'none',
-    padding: '0.5rem 0.75rem',
-    borderRadius: '4px',
+    fontSize: '1rem',
     cursor: 'pointer'
   }
 };
