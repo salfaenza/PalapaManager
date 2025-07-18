@@ -9,7 +9,7 @@ export default function UserManagement({ token }) {
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/users`, {
+      const res = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/users`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
@@ -33,7 +33,7 @@ export default function UserManagement({ token }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/users`, {
+      const res = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/users`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -58,7 +58,7 @@ export default function UserManagement({ token }) {
   const handleDelete = async (email) => {
     if (!window.confirm(`Delete user ${email}?`)) return;
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/users/${encodeURIComponent(email)}`, {
+      const res = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/users/${encodeURIComponent(email)}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${token}`
@@ -110,8 +110,8 @@ export default function UserManagement({ token }) {
             </tr>
           </thead>
           <tbody>
-            {users.map((user, i) => (
-              <tr key={i}>
+            {users.map((user) => (
+              <tr key={user.email}>
                 <td style={styles.cell}>{user.email}</td>
                 <td style={styles.cell}>{user.role}</td>
                 <td style={styles.cell}>

@@ -13,6 +13,8 @@ import BookingForm from './BookingForm';
 import BookingsTable from './BookingsTable';
 import UserManagement from './UserManagement';
 
+const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
 function App() {
   const [userEmail, setUserEmail] = useState(null);
   const [userRole, setUserRole] = useState(null);
@@ -30,7 +32,10 @@ function App() {
 
   const validateUser = useCallback(async (token) => {
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/auth-check`, {
+      const decoded = jwtDecode(token);
+      if (decoded.exp < Date.now() / 1000) throw new Error("Token expired");
+
+      const res = await fetch(`${API}/auth-check`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error("Unauthorized");
@@ -63,9 +68,8 @@ function App() {
     validateUser(credentialResponse.credential);
   };
 
-  const triggerRefresh = () => {
-    setTimeout(() => setRefreshKey(prev => prev + 1), 5000);
-    setTimeout(() => setRefreshKey(prev => prev + 1), 10000);
+  const triggerRefresh = (delay = 1000) => {
+    setTimeout(() => setRefreshKey(prev => prev + 1), delay);
   };
 
   if (loading) {

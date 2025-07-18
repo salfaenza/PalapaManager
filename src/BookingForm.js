@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 
 export default function BookingForm({ triggerRefresh, token }) {
@@ -24,6 +25,7 @@ export default function BookingForm({ triggerRefresh, token }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
 
     const submission = {
@@ -32,7 +34,7 @@ export default function BookingForm({ triggerRefresh, token }) {
     };
 
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/bookings`, {
+      const res = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/bookings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -41,14 +43,17 @@ export default function BookingForm({ triggerRefresh, token }) {
         body: JSON.stringify(submission)
       });
 
+      const data = await res.json();
+
       if (res.ok) {
         setSuccess("Booking scheduled!");
         setForm({ first: '', last: '', hut_number: '', room: '', email: '', phone: '' });
         setConflictFields([]);
-        if (triggerRefresh) triggerRefresh();
+        triggerRefresh?.();
       } else {
-        const data = await res.json();
-        if (data?.conflicting_fields?.length) {
+        if (data?.messages?.length) {
+          setError(data.messages.join(" "));
+        } else if (data?.conflicting_fields?.length) {
           setConflictFields(data.conflicting_fields);
           setError(`Conflict with: ${data.conflicting_fields.join(', ')}`);
         } else {
@@ -74,10 +79,7 @@ export default function BookingForm({ triggerRefresh, token }) {
               value={form.first}
               onChange={handleChange}
               placeholder="First Name"
-              style={{
-                ...styles.input,
-                ...(conflictFields.includes('first') ? styles.conflict : {})
-              }}
+              style={{ ...styles.input, ...(conflictFields.includes('first') ? styles.conflict : {}) }}
               required
             />
           </div>
@@ -88,10 +90,7 @@ export default function BookingForm({ triggerRefresh, token }) {
               value={form.last}
               onChange={handleChange}
               placeholder="Last Name"
-              style={{
-                ...styles.input,
-                ...(conflictFields.includes('last') ? styles.conflict : {})
-              }}
+              style={{ ...styles.input, ...(conflictFields.includes('last') ? styles.conflict : {}) }}
               required
             />
           </div>
@@ -99,16 +98,16 @@ export default function BookingForm({ triggerRefresh, token }) {
 
         {['hut_number', 'room', 'email', 'phone'].map((field) => (
           <div key={field} style={styles.inputGroup}>
-            <label style={styles.label}>{field.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</label>
+            <label style={styles.label}>
+              {field.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}
+            </label>
             <input
               name={field}
+              type={field === 'email' ? 'email' : 'text'}
               value={form[field]}
               onChange={handleChange}
               placeholder={`Enter ${field.replace('_', ' ')}`}
-              style={{
-                ...styles.input,
-                ...(conflictFields.includes(field) ? styles.conflict : {})
-              }}
+              style={{ ...styles.input, ...(conflictFields.includes(field) ? styles.conflict : {}) }}
               required
             />
           </div>
@@ -127,8 +126,10 @@ export default function BookingForm({ triggerRefresh, token }) {
 const styles = {
   container: {
     background: '#f9f9f9',
-    padding: '2rem',
+    padding: '1.5rem',
     maxWidth: '600px',
+    width: '100%',
+    boxSizing: 'border-box',
     margin: '2rem auto',
     borderRadius: '10px',
     boxShadow: '0 4px 12px rgba(0,0,0,0.06)'
@@ -141,26 +142,33 @@ const styles = {
   form: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '1rem'
+    gap: '1rem',
+    width: '100%'
   },
   nameRow: {
     display: 'flex',
-    gap: '1rem'
+    flexWrap: 'wrap',
+    gap: '1rem',
+    width: '100%'
   },
   inputGroup: {
     display: 'flex',
     flexDirection: 'column',
-    flex: 1
+    flex: 1,
+    minWidth: 0,
+    width: '100%'
   },
   label: {
     marginBottom: '0.25rem',
     fontWeight: '600'
   },
   input: {
+    width: '100%',
     padding: '0.6rem',
     fontSize: '1rem',
     borderRadius: '6px',
-    border: '1px solid #ccc'
+    border: '1px solid #ccc',
+    boxSizing: 'border-box'
   },
   conflict: {
     borderColor: '#b00020',
@@ -174,7 +182,8 @@ const styles = {
     border: 'none',
     borderRadius: '6px',
     cursor: 'pointer',
-    fontWeight: 'bold'
+    fontWeight: 'bold',
+    width: '100%'
   },
   error: {
     color: '#b00020',
