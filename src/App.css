@@ -105,3 +105,131 @@
     transform: rotate(360deg);
   }
 }
+
+
+/* ==================== Logs Page ==================== */
+
+.logs-container {
+  padding: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.logs-heading {
+  text-align: center;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.logs-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+}
+
+.logs-filter-btn {
+  border: 1px solid #ccc;
+  background: #fff;
+  border-radius: 999px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background 0.3s ease;
+}
+
+.logs-filter-btn.active {
+  background: #007bff;
+  color: #fff;
+  border-color: #007bff;
+}
+
+.log-card {
+  background: #fff;
+  border-radius: 8px;
+  padding: 0.8rem;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  transition: all 0.2s ease-in-out;
+}
+
+.log-card-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.log-meta {
+  font-size: 0.85rem;
+  color: #555;
+  word-break: break-word;
+}
+
+.log-meta-small {
+  font-size: 0.7rem;
+  color: #888;
+  word-break: break-word;
+}
+
+.log-toggle-btn {
+  align-self: flex-start;
+  background: #007bff;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.log-list {
+  margin-top: 0.3rem;
+  background: #1e1e1e;
+  color: #dcdcdc;
+  padding: 0.4rem;
+  border-radius: 6px;
+  max-height: 200px;
+  overflow-x: auto;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 0.75rem;
+}
+
+.log-line {
+  margin: 0;
+  white-space: pre;
+}
+
+.log-success {
+  color: #28a745;
+  margin-left: 0.3rem;
+}
+
+.log-fail {
+  color: #dc3545;
+  margin-left: 0.3rem;
+}
+
+@media (max-width: 600px) {
+  .logs-container {
+    padding: 0.5rem;
+  }
+  .logs-heading {
+    font-size: 1.1rem;
+  }
+  .log-list {
+    font-size: 0.7rem;
+    max-height: 150px;
+  }
+  .log-toggle-btn {
+    font-size: 0.7rem;
+  }
+}
