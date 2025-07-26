@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState, useCallback } from 'react';
 
 export default function BookingsTable({ token, refreshTrigger }) {
@@ -8,6 +7,7 @@ export default function BookingsTable({ token, refreshTrigger }) {
   const [deletingId, setDeletingId] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
+  const [saving, setSaving] = useState(false);
 
   const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -17,7 +17,13 @@ export default function BookingsTable({ token, refreshTrigger }) {
     fetch(`${API}/bookings`, {
       headers: { Authorization: `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Failed with ${res.status}`);
+        }
+        return res.json();
+      })
       .then(setBookings)
       .catch(err => {
         console.error("Failed to fetch bookings", err);
@@ -43,7 +49,8 @@ export default function BookingsTable({ token, refreshTrigger }) {
       if (res.ok) {
         fetchBookings();
       } else {
-        alert("Failed to delete schedule");
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "Failed to delete schedule");
       }
     } catch (err) {
       console.error("Delete failed", err);
@@ -54,11 +61,13 @@ export default function BookingsTable({ token, refreshTrigger }) {
   };
 
   const startEdit = (booking) => {
-    const nameParts = booking.name?.trim().split(" ");
-    const lastName = nameParts?.length > 1 ? nameParts[nameParts.length - 1] : booking.name;
-
     setEditingId(booking.scheduleName);
-    setEditForm({ ...booking, last: lastName });
+    setEditForm({
+      ...booking,
+      first: booking.first || booking.name?.split(' ')[0] || '',
+      last: booking.last || booking.name?.split(' ').slice(-1)[0] || '',
+      phone: booking.phone || ''
+    });
     setError('');
   };
 
@@ -66,13 +75,21 @@ export default function BookingsTable({ token, refreshTrigger }) {
     setEditingId(null);
     setEditForm({});
     setError('');
+    setSaving(false);
   };
 
   const saveEdit = async () => {
+    if (saving) return;
+    setSaving(true);
     try {
       const payload = {
-        ...editForm,
-        creator_email: bookings.find(b => b.scheduleName === editingId)?.creator_email || ''
+        first: editForm.first,
+        last: editForm.last,
+        name: `${editForm.first} ${editForm.last}`.trim(),
+        hut_number: editForm.hut_number,
+        room: editForm.room,
+        email: editForm.email,
+        phone: editForm.phone
       };
 
       const res = await fetch(`${API}/bookings/${encodeURIComponent(editingId)}`, {
@@ -93,6 +110,8 @@ export default function BookingsTable({ token, refreshTrigger }) {
       } else {
         if (data.messages?.length) {
           setError(data.messages.join(" "));
+        } else if (data.conflicting_fields?.length) {
+          setError(`Conflict with: ${data.conflicting_fields.join(', ')}`);
         } else {
           setError(data.error || "Failed to update booking.");
         }
@@ -100,6 +119,8 @@ export default function BookingsTable({ token, refreshTrigger }) {
     } catch (err) {
       console.error("Update failed:", err);
       setError("Network error while updating booking.");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -110,55 +131,49 @@ export default function BookingsTable({ token, refreshTrigger }) {
       {error && <div style={styles.error}>{error}</div>}
       <div style={styles.cardList}>
         {bookings.map((b) => (
-          <div key={b.scheduleName || b.email + b.booking_time} style={styles.card}>
+          <div key={b.scheduleName || b.id} style={styles.card}>
             {editingId === b.scheduleName ? (
               <>
                 <input
-                  value={editForm.name}
-                  onChange={e => {
-                    setEditForm({ ...editForm, name: e.target.value });
-                    setError('');
-                  }}
-                  placeholder="Name"
+                  value={editForm.first || ''}
+                  onChange={e => setEditForm({ ...editForm, first: e.target.value })}
+                  placeholder="First Name"
                   style={styles.input}
                 />
                 <input
-                  value={editForm.hut_number}
-                  onChange={e => {
-                    setEditForm({ ...editForm, hut_number: e.target.value });
-                    setError('');
-                  }}
+                  value={editForm.last || ''}
+                  onChange={e => setEditForm({ ...editForm, last: e.target.value })}
+                  placeholder="Last Name"
+                  style={styles.input}
+                />
+                <input
+                  value={editForm.hut_number || ''}
+                  onChange={e => setEditForm({ ...editForm, hut_number: e.target.value })}
                   placeholder="Hut Number"
                   style={styles.input}
                 />
                 <input
-                  value={editForm.room}
-                  onChange={e => {
-                    setEditForm({ ...editForm, room: e.target.value });
-                    setError('');
-                  }}
+                  value={editForm.room || ''}
+                  onChange={e => setEditForm({ ...editForm, room: e.target.value })}
                   placeholder="Room"
                   style={styles.input}
                 />
                 <input
-                  value={editForm.email}
-                  onChange={e => {
-                    setEditForm({ ...editForm, email: e.target.value });
-                    setError('');
-                  }}
+                  value={editForm.email || ''}
+                  onChange={e => setEditForm({ ...editForm, email: e.target.value })}
                   placeholder="Email"
                   style={styles.input}
                 />
                 <input
-                  value={editForm.booking_time}
-                  onChange={e => {
-                    setEditForm({ ...editForm, booking_time: e.target.value });
-                    setError('');
-                  }}
-                  placeholder="Booking Time"
+                  value={editForm.phone || ''}
+                  onChange={e => setEditForm({ ...editForm, phone: e.target.value })}
+                  placeholder="Phone"
                   style={styles.input}
                 />
-                <button onClick={saveEdit} style={styles.saveBtn}>Save</button>
+
+                <button onClick={saveEdit} style={styles.saveBtn} disabled={saving}>
+                  {saving ? 'Saving...' : 'Save'}
+                </button>
                 <button onClick={cancelEdit} style={styles.cancelBtn}>Cancel</button>
               </>
             ) : (
@@ -167,15 +182,17 @@ export default function BookingsTable({ token, refreshTrigger }) {
                 <div><strong>Hut:</strong> {b.hut_number}</div>
                 <div><strong>Room:</strong> {b.room}</div>
                 <div><strong>Email:</strong> {b.email}</div>
+                <div><strong>Phone:</strong> {b.phone || '—'}</div>
                 <div><strong>Time:</strong> {b.booking_time}</div>
                 <div><strong>Status:</strong> {b.status || 'ENABLED'}</div>
+
                 <button onClick={() => startEdit(b)} style={styles.editBtn}>Edit</button>
                 <button
                   style={styles.deleteBtn}
-                  onClick={() => handleDelete(b.scheduleName || b.name)}
-                  disabled={deletingId === (b.scheduleName || b.name)}
+                  onClick={() => handleDelete(b.scheduleName)}
+                  disabled={deletingId === b.scheduleName}
                 >
-                  {deletingId === (b.scheduleName || b.name) ? 'Deleting...' : 'Delete'}
+                  {deletingId === b.scheduleName ? 'Deleting...' : 'Delete'}
                 </button>
               </>
             )}

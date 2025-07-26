@@ -12,6 +12,7 @@ import { jwtDecode } from 'jwt-decode';
 import BookingForm from './BookingForm';
 import BookingsTable from './BookingsTable';
 import UserManagement from './UserManagement';
+import LogsPage from './LogsPage';
 import './App.css';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
@@ -34,14 +35,11 @@ function App() {
   const validateUser = useCallback(async (token) => {
     try {
       const decoded = jwtDecode(token);
-      if (decoded.exp < Date.now() / 1000 - 10) {
-        throw new Error("Token expired");
-      }
+      if (decoded.exp < Date.now() / 1000 - 10) throw new Error('Token expired');
 
       const res = await fetch(`${API}/auth-check`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-
       if (!res.ok) throw new Error(`Unauthorized: ${res.status}`);
 
       const data = await res.json();
@@ -54,8 +52,8 @@ function App() {
   }, [handleLogout]);
 
   useEffect(() => {
-    const storedToken = localStorage.getItem("token");
-    const storedEmail = localStorage.getItem("userEmail");
+    const storedToken = localStorage.getItem('token');
+    const storedEmail = localStorage.getItem('userEmail');
 
     if (storedToken) {
       setToken(storedToken);
@@ -69,13 +67,13 @@ function App() {
   const handleLogin = (credentialResponse) => {
     try {
       const decoded = jwtDecode(credentialResponse.credential);
-      localStorage.setItem("userEmail", decoded.email);
-      localStorage.setItem("token", credentialResponse.credential);
+      localStorage.setItem('userEmail', decoded.email);
+      localStorage.setItem('token', credentialResponse.credential);
       setToken(credentialResponse.credential);
       setUserEmail(decoded.email);
       validateUser(credentialResponse.credential);
     } catch (err) {
-      alert("Login failed. Please try again.");
+      alert('Login failed. Please try again.');
     }
   };
 
@@ -98,7 +96,7 @@ function App() {
         <h2>Sign In</h2>
         <GoogleLogin
           onSuccess={handleLogin}
-          onError={() => alert("Login Failed")}
+          onError={() => alert('Login Failed')}
           useOneTap
         />
       </div>
@@ -117,16 +115,23 @@ function App() {
             </div>
           }
         />
-        <Route
-          path="/admin/users"
-          element={
-            userRole === 'admin'
-              ? <div className="page"><UserManagement token={token} /></div>
-              : <Navigate to="/" />
-          }
-        />
+
+        {userRole === 'admin' && (
+          <>
+            <Route
+              path="/admin/users"
+              element={<div className="page"><UserManagement token={token} /></div>}
+            />
+            <Route
+              path="/admin/logs"
+              element={<div className="page"><LogsPage token={token} /></div>}
+            />
+          </>
+        )}
+
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
+
       <BottomNav userRole={userRole} handleLogout={handleLogout} />
     </Router>
   );
@@ -138,10 +143,30 @@ function BottomNav({ userRole, handleLogout }) {
 
   return (
     <nav className="bottom-nav-bar">
-      <Link to="/" className={isActive("/") ? "bottom-nav-link active" : "bottom-nav-link"}>Book</Link>
+      <Link
+        to="/"
+        className={isActive('/') ? 'bottom-nav-link active' : 'bottom-nav-link'}
+      >
+        Book
+      </Link>
+
       {userRole === 'admin' && (
-        <Link to="/admin/users" className={isActive("/admin/users") ? "bottom-nav-link active" : "bottom-nav-link"}>Users</Link>
+        <>
+          <Link
+            to="/admin/users"
+            className={isActive('/admin/users') ? 'bottom-nav-link active' : 'bottom-nav-link'}
+          >
+            Users
+          </Link>
+          <Link
+            to="/admin/logs"
+            className={isActive('/admin/logs') ? 'bottom-nav-link active' : 'bottom-nav-link'}
+          >
+          Logs
+          </Link>
+        </>
       )}
+
       <button onClick={handleLogout} className="bottom-nav-logout">Logout</button>
     </nav>
   );
