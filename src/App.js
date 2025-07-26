@@ -8,10 +8,11 @@ import {
   Link
 } from 'react-router-dom';
 import { GoogleOAuthProvider, GoogleLogin, googleLogout } from '@react-oauth/google';
-import { jwtDecode } from 'jwt-decode';
+import { jwtDecode } from 'jwt-decode'; // Correct for v4+
 import BookingForm from './BookingForm';
 import BookingsTable from './BookingsTable';
 import UserManagement from './UserManagement';
+import './App.css';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -22,25 +23,36 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
+    console.log("Logging out...");
     googleLogout();
     setUserEmail(null);
     setUserRole(null);
     setToken(null);
     localStorage.clear();
-  };
+  }, []);
 
   const validateUser = useCallback(async (token) => {
     try {
+      console.log("Validating token:", token);
       const decoded = jwtDecode(token);
-      if (decoded.exp < Date.now() / 1000) throw new Error("Token expired");
+      console.log("Decoded JWT:", decoded);
+
+      if (decoded.exp < Date.now() / 1000 - 10) {
+        console.warn("Token expired:", decoded.exp);
+        throw new Error("Token expired");
+      }
 
       const res = await fetch(`${API}/auth-check`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) throw new Error("Unauthorized");
+
+      console.log("Auth-check status:", res.status);
+      if (!res.ok) throw new Error(`Unauthorized: ${res.status}`);
 
       const data = await res.json();
+      console.log("Auth-check response:", data);
+
       setUserEmail(data.email);
       setUserRole(data.role);
       setLoading(false);
@@ -48,24 +60,39 @@ function App() {
       console.error("Access denied:", err.message);
       handleLogout();
     }
-  }, []);
+  }, [handleLogout]);
 
   useEffect(() => {
     const storedToken = localStorage.getItem("token");
+    const storedEmail = localStorage.getItem("userEmail");
+
     if (storedToken) {
+      console.log("Found stored token:", storedToken);
       setToken(storedToken);
+      if (storedEmail) setUserEmail(storedEmail);
       validateUser(storedToken);
     } else {
+      console.log("No stored token found");
       setLoading(false);
     }
   }, [validateUser]);
 
   const handleLogin = (credentialResponse) => {
-    const decoded = jwtDecode(credentialResponse.credential);
-    localStorage.setItem("userEmail", decoded.email);
-    localStorage.setItem("token", credentialResponse.credential);
-    setToken(credentialResponse.credential);
-    validateUser(credentialResponse.credential);
+    console.log("Google login response:", credentialResponse);
+
+    try {
+      const decoded = jwtDecode(credentialResponse.credential);
+      console.log("Decoded Google JWT:", decoded);
+
+      localStorage.setItem("userEmail", decoded.email);
+      localStorage.setItem("token", credentialResponse.credential);
+      setToken(credentialResponse.credential);
+      setUserEmail(decoded.email);
+      validateUser(credentialResponse.credential);
+    } catch (err) {
+      console.error("Login error:", err);
+      alert("Login failed. Check console logs for details.");
+    }
   };
 
   const triggerRefresh = (delay = 1000) => {
@@ -73,14 +100,23 @@ function App() {
   };
 
   if (loading) {
-    return <div style={styles.centered}>Loading...</div>;
+    return (
+      <div className="centered">
+        <div className="spinner" />
+        <p>Loading...</p>
+      </div>
+    );
   }
 
   if (!userEmail || !userRole) {
     return (
-      <div style={styles.centered}>
+      <div className="centered">
         <h2>Sign In</h2>
-        <GoogleLogin onSuccess={handleLogin} onError={() => alert("Login Failed")} />
+        <GoogleLogin
+          onSuccess={handleLogin}
+          onError={() => alert("Login Failed")}
+          useOneTap
+        />
       </div>
     );
   }
@@ -91,18 +127,20 @@ function App() {
         <Route
           path="/"
           element={
-            <div style={styles.page}>
+            <div className="page">
               <BookingForm triggerRefresh={triggerRefresh} token={token} />
               <BookingsTable refreshTrigger={refreshKey} token={token} />
             </div>
           }
         />
-        {userRole === 'admin' && (
-          <Route
-            path="/admin/users"
-            element={<div style={styles.page}><UserManagement token={token} /></div>}
-          />
-        )}
+        <Route
+          path="/admin/users"
+          element={
+            userRole === 'admin'
+              ? <div className="page"><UserManagement token={token} /></div>
+              : <Navigate to="/" />
+          }
+        />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
       <BottomNav userRole={userRole} handleLogout={handleLogout} />
@@ -115,65 +153,15 @@ function BottomNav({ userRole, handleLogout }) {
   const isActive = (path) => location.pathname === path;
 
   return (
-    <nav style={bottomNav.bar}>
-      <Link to="/" style={isActive("/") ? bottomNav.active : bottomNav.link}>Book</Link>
+    <nav className="bottom-nav-bar">
+      <Link to="/" className={isActive("/") ? "bottom-nav-link active" : "bottom-nav-link"}>Book</Link>
       {userRole === 'admin' && (
-        <Link to="/admin/users" style={isActive("/admin/users") ? bottomNav.active : bottomNav.link}>Users</Link>
+        <Link to="/admin/users" className={isActive("/admin/users") ? "bottom-nav-link active" : "bottom-nav-link"}>Users</Link>
       )}
-      <button onClick={handleLogout} style={bottomNav.logout}>Logout</button>
+      <button onClick={handleLogout} className="bottom-nav-logout">Logout</button>
     </nav>
   );
 }
-
-const styles = {
-  page: {
-    padding: '1rem',
-    backgroundColor: '#f9f9f9',
-    minHeight: '100vh',
-    paddingBottom: '4rem'
-  },
-  centered: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '100vh',
-    gap: '1rem',
-  }
-};
-
-const bottomNav = {
-  bar: {
-    display: 'flex',
-    justifyContent: 'space-around',
-    position: 'fixed',
-    bottom: 0,
-    left: 0,
-    width: '100%',
-    backgroundColor: '#007bff',
-    padding: '0.75rem 1rem',
-    borderTop: '1px solid #ccc',
-    zIndex: 1000
-  },
-  link: {
-    color: '#fff',
-    fontSize: '1rem',
-    textDecoration: 'none',
-    opacity: 0.85
-  },
-  active: {
-    color: '#fff',
-    textDecoration: 'underline',
-    fontWeight: 'bold'
-  },
-  logout: {
-    backgroundColor: 'transparent',
-    color: '#fff',
-    border: 'none',
-    fontSize: '1rem',
-    cursor: 'pointer'
-  }
-};
 
 export default function WrappedApp() {
   return (
