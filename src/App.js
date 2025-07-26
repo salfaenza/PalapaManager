@@ -8,7 +8,7 @@ import {
   Link
 } from 'react-router-dom';
 import { GoogleOAuthProvider, GoogleLogin, googleLogout } from '@react-oauth/google';
-import { jwtDecode } from 'jwt-decode'; // Correct for v4+
+import { jwtDecode } from 'jwt-decode';
 import BookingForm from './BookingForm';
 import BookingsTable from './BookingsTable';
 import UserManagement from './UserManagement';
@@ -24,7 +24,6 @@ function App() {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const handleLogout = useCallback(() => {
-    console.log("Logging out...");
     googleLogout();
     setUserEmail(null);
     setUserRole(null);
@@ -34,12 +33,8 @@ function App() {
 
   const validateUser = useCallback(async (token) => {
     try {
-      console.log("Validating token:", token);
       const decoded = jwtDecode(token);
-      console.log("Decoded JWT:", decoded);
-
       if (decoded.exp < Date.now() / 1000 - 10) {
-        console.warn("Token expired:", decoded.exp);
         throw new Error("Token expired");
       }
 
@@ -47,17 +42,13 @@ function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      console.log("Auth-check status:", res.status);
       if (!res.ok) throw new Error(`Unauthorized: ${res.status}`);
 
       const data = await res.json();
-      console.log("Auth-check response:", data);
-
       setUserEmail(data.email);
       setUserRole(data.role);
       setLoading(false);
     } catch (err) {
-      console.error("Access denied:", err.message);
       handleLogout();
     }
   }, [handleLogout]);
@@ -67,31 +58,24 @@ function App() {
     const storedEmail = localStorage.getItem("userEmail");
 
     if (storedToken) {
-      console.log("Found stored token:", storedToken);
       setToken(storedToken);
       if (storedEmail) setUserEmail(storedEmail);
       validateUser(storedToken);
     } else {
-      console.log("No stored token found");
       setLoading(false);
     }
   }, [validateUser]);
 
   const handleLogin = (credentialResponse) => {
-    console.log("Google login response:", credentialResponse);
-
     try {
       const decoded = jwtDecode(credentialResponse.credential);
-      console.log("Decoded Google JWT:", decoded);
-
       localStorage.setItem("userEmail", decoded.email);
       localStorage.setItem("token", credentialResponse.credential);
       setToken(credentialResponse.credential);
       setUserEmail(decoded.email);
       validateUser(credentialResponse.credential);
     } catch (err) {
-      console.error("Login error:", err);
-      alert("Login failed. Check console logs for details.");
+      alert("Login failed. Please try again.");
     }
   };
 
