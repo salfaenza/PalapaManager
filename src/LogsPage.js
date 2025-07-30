@@ -1,6 +1,5 @@
-import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 
-const AUTO_REFRESH_MS = 15000; // set to 0 to disable auto-refresh
 const FILTERS = {
   ALL: 'all',
   SUCCESS: 'success',
@@ -13,7 +12,6 @@ export default function LogsPage({ token }) {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState(FILTERS.ALL);
   const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
-  const timerRef = useRef(null);
 
   const loadLogs = useCallback(async () => {
     try {
@@ -21,19 +19,13 @@ export default function LogsPage({ token }) {
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
-
       if (!res.ok) throw new Error(data.error || `Failed with status ${res.status}`);
 
-      if (!data.streams) {
-        setStreams([]);
-        setError('No logs found.');
-      } else {
-        const sorted = [...data.streams].sort(
-          (a, b) => (b.lastEventTime || 0) - (a.lastEventTime || 0)
-        );
-        setStreams(sorted);
-        setError('');
-      }
+      const sorted = [...(data.streams || [])].sort(
+        (a, b) => (b.lastEventTime || 0) - (a.lastEventTime || 0)
+      );
+      setStreams(sorted);
+      setError('');
     } catch (e) {
       console.error(e);
       setError(e.message || 'Failed to fetch logs');
@@ -44,14 +36,6 @@ export default function LogsPage({ token }) {
 
   useEffect(() => {
     loadLogs();
-
-    if (AUTO_REFRESH_MS > 0) {
-      timerRef.current = setInterval(loadLogs, AUTO_REFRESH_MS);
-    }
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
   }, [loadLogs]);
 
   const filteredStreams = useMemo(() => {
@@ -75,15 +59,10 @@ export default function LogsPage({ token }) {
   return (
     <div className="logs-container">
       <h2 className="logs-heading">Execution Logs</h2>
-
       <FilterBar filter={filter} setFilter={setFilter} counts={counts} />
-
-      {filteredStreams.length === 0 && (
-        <div className="centered">No logs found for this filter.</div>
-      )}
-
+      {filteredStreams.length === 0 && <div className="centered">No logs found for this filter.</div>}
       {filteredStreams.map((s, idx) => (
-        <StreamCard key={s.streamName || idx} stream={s} />
+        <StreamCard key={s.streamName || idx} stream={s} token={token} API={API} />
       ))}
     </div>
   );
@@ -92,47 +71,60 @@ export default function LogsPage({ token }) {
 function FilterBar({ filter, setFilter, counts }) {
   return (
     <div className="logs-filter-bar">
-      <button
-        className={`logs-filter-btn ${filter === 'all' ? 'active' : ''}`}
-        onClick={() => setFilter('all')}
-      >
+      <button className={`logs-filter-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
         All ({counts.total})
       </button>
-      <button
-        className={`logs-filter-btn ${filter === 'success' ? 'active' : ''}`}
-        onClick={() => setFilter('success')}
-      >
+      <button className={`logs-filter-btn ${filter === 'success' ? 'active' : ''}`} onClick={() => setFilter('success')}>
         ✅ Success ({counts.success})
       </button>
-      <button
-        className={`logs-filter-btn ${filter === 'failed' ? 'active' : ''}`}
-        onClick={() => setFilter('failed')}
-      >
+      <button className={`logs-filter-btn ${filter === 'failed' ? 'active' : ''}`} onClick={() => setFilter('failed')}>
         ❌ Failed ({counts.failed})
       </button>
     </div>
   );
 }
 
-function StreamCard({ stream }) {
+function StreamCard({ stream, token, API }) {
   const [expanded, setExpanded] = useState(false);
+  const [fullMessages, setFullMessages] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const bookingInfo = findAndParseBookingInfo(stream.messages);
   const lastEvent = stream.lastEventTime
     ? new Date(stream.lastEventTime).toLocaleString()
     : 'N/A';
-
   const wasSuccessful = checkSuccess(stream.messages);
+
+  const handleToggle = async () => {
+    if (!expanded && !fullMessages) {
+      try {
+        setLoading(true);
+        const res = await fetch(`${API}/logs/${encodeURIComponent(stream.streamName)}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (res.ok && data.messages) {
+          setFullMessages(data.messages);
+        } else {
+          setFullMessages(["Failed to load full log"]);
+        }
+      } catch (e) {
+        console.error("Error loading full log", e);
+        setFullMessages(["Error fetching full log"]);
+      } finally {
+        setLoading(false);
+      }
+    }
+    setExpanded(!expanded);
+  };
 
   return (
     <div className="log-card">
-      <div className="log-card-header" onClick={() => setExpanded(!expanded)}>
+      <div className="log-card-header" onClick={handleToggle}>
         <div style={{ flex: 1 }}>
           <strong>
-          {bookingInfo?.name || 'Unknown Booking'}{' '}
-            {wasSuccessful
-              ? <span className="log-success">✅</span>
-              : <span className="log-fail">❌</span>}
+            {bookingInfo?.name || 'Unknown Booking'}{' '}
+            {wasSuccessful ? <span className="log-success">✅</span> : <span className="log-fail">❌</span>}
           </strong>
           <div className="log-meta">
             {bookingInfo
@@ -143,14 +135,13 @@ function StreamCard({ stream }) {
             {stream.streamName} • Last event: {lastEvent}
           </div>
         </div>
-        <button className="log-toggle-btn">
-          {expanded ? 'Hide' : 'View'}
-        </button>
+        <button className="log-toggle-btn">{expanded ? 'Hide' : 'View'}</button>
       </div>
 
       {expanded && (
         <div className="log-list">
-          {stream.messages.map((m, i) => (
+          {loading && <div className="log-line">Loading full log...</div>}
+          {(fullMessages || stream.messages).map((m, i) => (
             <pre key={i} className="log-line">{m}</pre>
           ))}
         </div>
@@ -178,13 +169,11 @@ function parsePythonishJson(raw) {
     const start = raw.indexOf('{');
     if (start === -1) return null;
     const jsonCandidate = raw.slice(start);
-
     const normalized = jsonCandidate
       .replace(/'/g, '"')
       .replace(/\bNone\b/g, 'null')
       .replace(/\bTrue\b/g, 'true')
       .replace(/\bFalse\b/g, 'false');
-
     return JSON.parse(normalized);
   } catch {
     return null;
