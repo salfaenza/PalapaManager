@@ -8,7 +8,7 @@ import {
   Link
 } from 'react-router-dom';
 import { GoogleOAuthProvider, GoogleLogin, googleLogout } from '@react-oauth/google';
-import { jwtDecode } from 'jwt-decode';
+import jwtDecode from 'jwt-decode';
 import BookingForm from './BookingForm';
 import BookingsTable from './BookingsTable';
 import UserManagement from './UserManagement';
@@ -30,32 +30,46 @@ function App() {
     setUserRole(null);
     setToken(null);
     localStorage.clear();
+    setLoading(false); // ensure spinner is cleared on any logout path
   }, []);
 
-  const validateUser = useCallback(async (token) => {
-    try {
-      const decoded = jwtDecode(token);
-      if (decoded.exp < Date.now() / 1000 - 10) throw new Error('Token expired');
+  const validateUser = useCallback(
+    async (idToken) => {
+      try {
+        const decoded = jwtDecode(idToken);
+        const now = Math.floor(Date.now() / 1000);
+        // allow a little skew so just-issued tokens don't get rejected
+        if (decoded?.exp && decoded.exp <= now - 60) {
+          throw new Error('Token expired');
+        }
 
-      const res = await fetch(`${API}/auth-check`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`Unauthorized: ${res.status}`);
+        const res = await fetch(`${API}/auth-check`, {
+          headers: { Authorization: `Bearer ${idToken}` },
+        });
+        if (!res.ok) throw new Error(`Unauthorized: ${res.status}`);
 
-      const data = await res.json();
-      setUserEmail(data.email);
-      setUserRole(data.role);
-      setLoading(false);
-    } catch (err) {
-      handleLogout();
-    }
-  }, [handleLogout]);
+        const data = await res.json();
+        setUserEmail(data.email);
+        setUserRole(data.role);
+        return true;
+      } catch (err) {
+        console.error('validateUser failed:', err);
+        handleLogout();
+        return false;
+      } finally {
+        // CRITICAL: always release the spinner, success or error
+        setLoading(false);
+      }
+    },
+    [handleLogout]
+  );
 
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
     const storedEmail = localStorage.getItem('userEmail');
 
     if (storedToken) {
+      setLoading(true);
       setToken(storedToken);
       if (storedEmail) setUserEmail(storedEmail);
       validateUser(storedToken);
@@ -66,19 +80,27 @@ function App() {
 
   const handleLogin = (credentialResponse) => {
     try {
-      const decoded = jwtDecode(credentialResponse.credential);
+      const idToken = credentialResponse?.credential;
+      if (!idToken) throw new Error('No credential returned from Google');
+      setLoading(true);
+
+      const decoded = jwtDecode(idToken);
       localStorage.setItem('userEmail', decoded.email);
-      localStorage.setItem('token', credentialResponse.credential);
-      setToken(credentialResponse.credential);
+      localStorage.setItem('token', idToken);
+
+      setToken(idToken);
       setUserEmail(decoded.email);
-      validateUser(credentialResponse.credential);
+
+      validateUser(idToken);
     } catch (err) {
+      console.error('handleLogin failed:', err);
+      setLoading(false);
       alert('Login failed. Please try again.');
     }
   };
 
   const triggerRefresh = (delay = 1000) => {
-    setTimeout(() => setRefreshKey(prev => prev + 1), delay);
+    setTimeout(() => setRefreshKey((prev) => prev + 1), delay);
   };
 
   if (loading) {
@@ -96,7 +118,10 @@ function App() {
         <h2>Sign In</h2>
         <GoogleLogin
           onSuccess={handleLogin}
-          onError={() => alert('Login Failed')}
+          onError={() => {
+            setLoading(false);
+            alert('Login Failed');
+          }}
           useOneTap
         />
       </div>
@@ -120,11 +145,19 @@ function App() {
           <>
             <Route
               path="/admin/users"
-              element={<div className="page"><UserManagement token={token} /></div>}
+              element={
+                <div className="page">
+                  <UserManagement token={token} />
+                </div>
+              }
             />
             <Route
               path="/admin/logs"
-              element={<div className="page"><LogsPage token={token} /></div>}
+              element={
+                <div className="page">
+                  <LogsPage token={token} />
+                </div>
+              }
             />
           </>
         )}
@@ -154,20 +187,26 @@ function BottomNav({ userRole, handleLogout }) {
         <>
           <Link
             to="/admin/users"
-            className={isActive('/admin/users') ? 'bottom-nav-link active' : 'bottom-nav-link'}
+            className={
+              isActive('/admin/users') ? 'bottom-nav-link active' : 'bottom-nav-link'
+            }
           >
             Users
           </Link>
           <Link
             to="/admin/logs"
-            className={isActive('/admin/logs') ? 'bottom-nav-link active' : 'bottom-nav-link'}
+            className={
+              isActive('/admin/logs') ? 'bottom-nav-link active' : 'bottom-nav-link'
+            }
           >
-          Logs
+            Logs
           </Link>
         </>
       )}
 
-      <button onClick={handleLogout} className="bottom-nav-logout">Logout</button>
+      <button onClick={handleLogout} className="bottom-nav-logout">
+        Logout
+      </button>
     </nav>
   );
 }
