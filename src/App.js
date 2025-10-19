@@ -8,7 +8,7 @@ import {
   Link
 } from 'react-router-dom';
 import { GoogleOAuthProvider, GoogleLogin, googleLogout } from '@react-oauth/google';
-import jwtDecode from 'jwt-decode';
+import { jwtDecode } from 'jwt-decode'; // <-- named export for v4.x
 import BookingForm from './BookingForm';
 import BookingsTable from './BookingsTable';
 import UserManagement from './UserManagement';
@@ -57,7 +57,7 @@ function App() {
         handleLogout();
         return false;
       } finally {
-        // CRITICAL: always release the spinner, success or error
+        // always release the spinner
         setLoading(false);
       }
     },
