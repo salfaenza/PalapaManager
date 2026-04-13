@@ -8,7 +8,8 @@ export default function BookingForm({ triggerRefresh, token }) {
     hut_number: '',
     room: '',
     email: '',
-    phone: ''
+    phone: '',
+    debug_mode: false
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -17,7 +18,8 @@ export default function BookingForm({ triggerRefresh, token }) {
   const [conflictFields, setConflictFields] = useState([]);
 
   const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
+    const { name, type, checked, value } = e.target;
+    setForm({ ...form, [name]: type === 'checkbox' ? checked : value });
     setError('');
     setSuccess('');
     setConflictFields([]);
@@ -46,8 +48,8 @@ export default function BookingForm({ triggerRefresh, token }) {
       const data = await res.json();
 
       if (res.ok) {
-        setSuccess("Booking scheduled!");
-        setForm({ first: '', last: '', hut_number: '', room: '', email: '', phone: '' });
+        setSuccess(form.debug_mode ? "Debug booking scheduled!" : "Booking scheduled!");
+        setForm({ first: '', last: '', hut_number: '', room: '', email: '', phone: '', debug_mode: false });
         setConflictFields([]);
         triggerRefresh?.();
       } else {
@@ -113,6 +115,17 @@ export default function BookingForm({ triggerRefresh, token }) {
           </div>
         ))}
 
+        <label style={styles.checkboxRow}>
+          <input
+            name="debug_mode"
+            type="checkbox"
+            checked={form.debug_mode}
+            onChange={handleChange}
+            style={styles.checkbox}
+          />
+          <span>Use debug Lambda</span>
+        </label>
+
         {error && <div style={styles.error}>{error}</div>}
         {success && <div style={styles.success}>{success}</div>}
         <button type="submit" style={styles.button} disabled={submitting}>
@@ -173,6 +186,16 @@ const styles = {
   conflict: {
     borderColor: '#b00020',
     backgroundColor: '#ffeaea'
+  },
+  checkboxRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontWeight: '600'
+  },
+  checkbox: {
+    width: '1rem',
+    height: '1rem'
   },
   button: {
     padding: '0.8rem',

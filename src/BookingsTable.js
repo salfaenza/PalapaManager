@@ -66,7 +66,8 @@ export default function BookingsTable({ token, refreshTrigger }) {
       ...booking,
       first: booking.first || booking.name?.split(' ')[0] || '',
       last: booking.last || booking.name?.split(' ').slice(-1)[0] || '',
-      phone: booking.phone || ''
+      phone: booking.phone || '',
+      debug_mode: Boolean(booking.debug_mode)
     });
     setError('');
   };
@@ -89,7 +90,8 @@ export default function BookingsTable({ token, refreshTrigger }) {
         hut_number: editForm.hut_number,
         room: editForm.room,
         email: editForm.email,
-        phone: editForm.phone
+        phone: editForm.phone,
+        debug_mode: Boolean(editForm.debug_mode)
       };
 
       const res = await fetch(`${API}/bookings/${encodeURIComponent(editingId)}`, {
@@ -170,6 +172,14 @@ export default function BookingsTable({ token, refreshTrigger }) {
                   placeholder="Phone"
                   style={styles.input}
                 />
+                <label style={styles.checkboxRow}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(editForm.debug_mode)}
+                    onChange={e => setEditForm({ ...editForm, debug_mode: e.target.checked })}
+                  />
+                  <span>Use debug Lambda</span>
+                </label>
 
                 <button onClick={saveEdit} style={styles.saveBtn} disabled={saving}>
                   {saving ? 'Saving...' : 'Save'}
@@ -184,6 +194,7 @@ export default function BookingsTable({ token, refreshTrigger }) {
                 <div><strong>Email:</strong> {b.email}</div>
                 <div><strong>Phone:</strong> {b.phone || '—'}</div>
                 <div><strong>Time:</strong> {b.booking_time}</div>
+                <div><strong>Mode:</strong> {b.debug_mode ? 'Debug' : 'Standard'}</div>
                 <div><strong>Status:</strong> {b.status || 'ENABLED'}</div>
 
                 <button onClick={() => startEdit(b)} style={styles.editBtn}>Edit</button>
@@ -240,6 +251,12 @@ const styles = {
     fontSize: '1rem',
     border: '1px solid #ccc',
     borderRadius: '4px'
+  },
+  checkboxRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontWeight: '600'
   },
   editBtn: {
     backgroundColor: '#007bff',

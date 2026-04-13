@@ -62,7 +62,7 @@ export default function LogsPage({ token }) {
       <FilterBar filter={filter} setFilter={setFilter} counts={counts} />
       {filteredStreams.length === 0 && <div className="centered">No logs found for this filter.</div>}
       {filteredStreams.map((s, idx) => (
-        <StreamCard key={s.streamName || idx} stream={s} token={token} API={API} />
+        <StreamCard key={`${s.logGroup || 'standard'}:${s.streamName || idx}`} stream={s} token={token} API={API} />
       ))}
     </div>
   );
@@ -75,10 +75,10 @@ function FilterBar({ filter, setFilter, counts }) {
         All ({counts.total})
       </button>
       <button className={`logs-filter-btn ${filter === 'success' ? 'active' : ''}`} onClick={() => setFilter('success')}>
-        ✅ Success ({counts.success})
+        Success ({counts.success})
       </button>
       <button className={`logs-filter-btn ${filter === 'failed' ? 'active' : ''}`} onClick={() => setFilter('failed')}>
-        ❌ Failed ({counts.failed})
+        Failed ({counts.failed})
       </button>
     </div>
   );
@@ -99,7 +99,8 @@ function StreamCard({ stream, token, API }) {
     if (!expanded && !fullMessages) {
       try {
         setLoading(true);
-        const res = await fetch(`${API}/logs/${encodeURIComponent(stream.streamName)}`, {
+        const params = stream.logGroup ? `?logGroup=${encodeURIComponent(stream.logGroup)}` : '';
+        const res = await fetch(`${API}/logs/${encodeURIComponent(stream.streamName)}${params}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         const data = await res.json();
@@ -124,7 +125,10 @@ function StreamCard({ stream, token, API }) {
         <div style={{ flex: 1 }}>
           <strong>
             {bookingInfo?.name || 'Unknown Booking'}{' '}
-            {wasSuccessful ? <span className="log-success">✅</span> : <span className="log-fail">❌</span>}
+            {wasSuccessful ? <span className="log-success">Success</span> : <span className="log-fail">Failed</span>}
+            <span className={`log-mode-badge ${stream.functionMode === 'debug' ? 'log-debug' : 'log-standard'}`}>
+              {stream.functionMode === 'debug' ? 'Debug' : 'Standard'}
+            </span>
           </strong>
           <div className="log-meta">
             {bookingInfo
@@ -132,7 +136,7 @@ function StreamCard({ stream, token, API }) {
               : 'Could not parse booking header'}
           </div>
           <div className="log-meta-small">
-            {stream.streamName} • Last event: {lastEvent}
+            {stream.streamName} • {stream.logGroup || '/aws/lambda/execute-palapa-booking'} • Last event: {lastEvent}
           </div>
         </div>
         <button className="log-toggle-btn">{expanded ? 'Hide' : 'View'}</button>
@@ -154,10 +158,19 @@ function StreamCard({ stream, token, API }) {
 
 function findAndParseBookingInfo(messages = []) {
   for (const msg of messages) {
-    if (msg.includes("'id':") || msg.trim().startsWith('{')) {
+    if (
+      msg.includes("'id':")
+      || msg.includes('"id":')
+      || msg.includes('PALAPA_DEBUG')
+      || msg.includes('DEBUG_LAMBDA_EVENT')
+      || msg.trim().startsWith('{')
+    ) {
       const parsed = parsePythonishJson(msg);
       if (parsed && (parsed.name || parsed.hut_number || parsed.room)) {
         return parsed;
+      }
+      if (parsed?.event && (parsed.event.name || parsed.event.hut_number || parsed.event.room)) {
+        return parsed.event;
       }
     }
   }
