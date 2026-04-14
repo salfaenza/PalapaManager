@@ -208,6 +208,43 @@
   white-space: pre;
 }
 
+.log-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid #d6e3e5;
+  border-radius: 6px;
+  background: #f7fbfc;
+  padding: 0.7rem;
+}
+
+.log-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.log-step-dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: #9ca3af;
+  margin-top: 0.25rem;
+  flex: 0 0 auto;
+}
+
+.log-step-dot.ok {
+  background: #16803a;
+}
+
+.log-step-dot.fail {
+  background: #be123c;
+}
+
+.log-step-dot.pending {
+  background: #9ca3af;
+}
+
 .log-success {
   display: inline-block;
   color: #126b2f;

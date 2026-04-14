@@ -89,11 +89,14 @@ function StreamCard({ stream, token, API }) {
   const [fullMessages, setFullMessages] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const bookingInfo = findAndParseBookingInfo(stream.messages);
+  const visibleMessages = fullMessages || stream.messages;
+  const debugEvents = parseDebugEvents(visibleMessages);
+  const runSummary = summarizeRun(debugEvents, visibleMessages);
+  const bookingInfo = findAndParseBookingInfo(visibleMessages);
   const lastEvent = stream.lastEventTime
     ? new Date(stream.lastEventTime).toLocaleString()
     : 'N/A';
-  const wasSuccessful = checkSuccess(stream.messages);
+  const wasSuccessful = checkSuccess(visibleMessages);
 
   const handleToggle = async () => {
     if (!expanded && !fullMessages) {
@@ -135,6 +138,7 @@ function StreamCard({ stream, token, API }) {
               ? <>Hut {bookingInfo.hut_number} • Room {bookingInfo.room} • {bookingInfo.booking_time}</>
               : 'Could not parse booking header'}
           </div>
+          {runSummary.reason && <div className="log-meta">{runSummary.reason}</div>}
           <div className="log-meta-small">
             {stream.streamName} • {stream.logGroup || '/aws/lambda/execute-palapa-booking'} • Last event: {lastEvent}
           </div>
@@ -143,12 +147,27 @@ function StreamCard({ stream, token, API }) {
       </div>
 
       {expanded && (
-        <div className="log-list">
-          {loading && <div className="log-line">Loading full log...</div>}
-          {(fullMessages || stream.messages).map((m, i) => (
-            <pre key={i} className="log-line">{m}</pre>
-          ))}
-        </div>
+        <>
+          {runSummary.steps.length > 0 && (
+            <div className="log-summary">
+              {runSummary.steps.map((step) => (
+                <div key={step.label} className="log-step">
+                  <span className={`log-step-dot ${step.status}`}></span>
+                  <div>
+                    <strong>{step.label}</strong>
+                    <div className="log-meta-small">{step.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="log-list">
+            {loading && <div className="log-line">Loading full log...</div>}
+            {visibleMessages.map((m, i) => (
+              <pre key={i} className="log-line">{m}</pre>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
@@ -194,7 +213,95 @@ function parsePythonishJson(raw) {
 }
 
 function checkSuccess(messages) {
-  return messages.some(m =>
+  const events = parseDebugEvents(messages);
+  return events.some(e =>
+    e.name === 'lambda_complete' || (e.name === 'book_from_cart_result' && e.success === 'ok')
+  ) || messages.some(m =>
     m.includes('"success": "ok"') || m.includes("'success': 'ok'")
   );
+}
+
+function parseDebugEvents(messages = []) {
+  return messages
+    .map(parsePythonishJson)
+    .filter((event) => event && event.debug && event.name);
+}
+
+function findEvent(events, names) {
+  const wanted = Array.isArray(names) ? names : [names];
+  return events.find((event) => wanted.includes(event.name));
+}
+
+function summarizeRun(events, messages) {
+  const steps = [];
+  const addStep = (label, event, detail, status = 'pending') => {
+    if (!event && !detail) return;
+    steps.push({ label, detail: detail || event?.utc || '', status });
+  };
+
+  const started = findEvent(events, 'lambda_start');
+  const timing = findEvent(events, 'prefire_timing');
+  const target = findEvent(events, 'target_booking_selected');
+  const reserveSuccess = events.find((event) => event.name === 'reserve_attempt' && event.success === 'ok');
+  const reserveFailure = findEvent(events, ['reserve_exhausted', 'lambda_exit_no_reserve']);
+  const cartSuccess = events.find((event) => event.name === 'add_to_cart_shot' && event.success === 'ok');
+  const cartFailure = findEvent(events, ['add_to_cart_exhausted', 'lambda_exit_no_cart']);
+  const checkout = findEvent(events, 'book_from_cart_result');
+  const complete = findEvent(events, 'lambda_complete');
+  const tooEarly = findEvent(events, 'lambda_exit_too_early');
+  const exception = findEvent(events, 'lambda_exception');
+
+  addStep('Started', started, started?.local_now || started?.utc, 'ok');
+  addStep(
+    'Timing',
+    timing,
+    timing ? `${timing.seconds_until_prefire}s until prefire, opens ${timing.booking_start_utc}` : '',
+    timing ? 'ok' : 'pending'
+  );
+  addStep(
+    'Target',
+    target,
+    target?.booking ? `Booking ${target.booking.id}, status ${target.booking.status}, opens ${target.booking_time}` : '',
+    target ? 'ok' : 'pending'
+  );
+  addStep(
+    'Reserve',
+    reserveSuccess || reserveFailure,
+    reserveSuccess
+      ? `Attempt ${reserveSuccess.attempt}, ${reserveSuccess.rtt_ms} ms`
+      : reserveFailure ? 'Reserve did not complete' : '',
+    reserveSuccess ? 'ok' : reserveFailure ? 'fail' : 'pending'
+  );
+  addStep(
+    'Cart',
+    cartSuccess || cartFailure,
+    cartSuccess
+      ? `Shot ${cartSuccess.shot_id}, ${cartSuccess.rtt_ms} ms`
+      : cartFailure ? 'Add to cart did not complete' : '',
+    cartSuccess ? 'ok' : cartFailure ? 'fail' : 'pending'
+  );
+  addStep(
+    'Checkout',
+    checkout,
+    checkout ? `${checkout.success || 'no success flag'}${checkout.rtt_ms ? `, ${checkout.rtt_ms} ms` : ''}` : '',
+    checkout?.success === 'ok' ? 'ok' : checkout ? 'fail' : 'pending'
+  );
+  addStep(
+    'Complete',
+    complete || tooEarly || exception,
+    complete
+      ? `Total ${complete.total_time_seconds}s`
+      : tooEarly ? 'Exited before prefire window' : exception?.error || '',
+    complete ? 'ok' : tooEarly || exception ? 'fail' : 'pending'
+  );
+
+  let reason = '';
+  if (complete) reason = 'Completed';
+  else if (tooEarly) reason = 'Exited before the booking window';
+  else if (exception) reason = `Exception: ${exception.error}`;
+  else if (cartFailure) reason = 'Add to cart failed';
+  else if (reserveFailure) reason = 'Reserve failed';
+  else if (checkSuccess(messages)) reason = 'Success response found';
+
+  return { reason, steps };
 }

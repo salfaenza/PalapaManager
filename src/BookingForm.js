@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 export default function BookingForm({ triggerRefresh, token }) {
   const [form, setForm] = useState({
@@ -16,10 +16,63 @@ export default function BookingForm({ triggerRefresh, token }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [conflictFields, setConflictFields] = useState([]);
+  const [palapas, setPalapas] = useState([]);
+  const [palapasDate, setPalapasDate] = useState('');
+  const [loadingPalapas, setLoadingPalapas] = useState(false);
+  const [palapaError, setPalapaError] = useState('');
+  const [hutSearch, setHutSearch] = useState('');
+  const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
+  useEffect(() => {
+    const loadPalapas = async () => {
+      setLoadingPalapas(true);
+      setPalapaError('');
+      try {
+        const res = await fetch(`${API}/palapas`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load huts');
+        setPalapas(Array.isArray(data.palapas) ? data.palapas : []);
+        setPalapasDate(data.book_date || '');
+      } catch (err) {
+        setPalapaError(err.message || 'Failed to load huts');
+      } finally {
+        setLoadingPalapas(false);
+      }
+    };
+    loadPalapas();
+  }, [API, token]);
+
+  const filteredPalapas = useMemo(() => {
+    const needle = hutSearch.trim().toLowerCase();
+    if (!needle) return palapas.slice(0, 80);
+    return palapas.filter((palapa) =>
+      [
+        palapa.name,
+        palapa.zone_name,
+        palapa.palapatype_name,
+        palapa.status_label
+      ].some((value) => String(value || '').toLowerCase().includes(needle))
+    ).slice(0, 80);
+  }, [hutSearch, palapas]);
+
+  const selectedPalapa = useMemo(
+    () => palapas.find((palapa) => String(palapa.name) === String(form.hut_number)),
+    [palapas, form.hut_number]
+  );
 
   const handleChange = (e) => {
     const { name, type, checked, value } = e.target;
     setForm({ ...form, [name]: type === 'checkbox' ? checked : value });
+    setError('');
+    setSuccess('');
+    setConflictFields([]);
+  };
+
+  const handlePalapaSelect = (e) => {
+    const hutNumber = e.target.value;
+    setForm({ ...form, hut_number: hutNumber });
     setError('');
     setSuccess('');
     setConflictFields([]);
@@ -36,7 +89,7 @@ export default function BookingForm({ triggerRefresh, token }) {
     };
 
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/bookings`, {
+      const res = await fetch(`${API}/bookings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -50,6 +103,7 @@ export default function BookingForm({ triggerRefresh, token }) {
       if (res.ok) {
         setSuccess(form.debug_mode ? "Debug booking scheduled!" : "Booking scheduled!");
         setForm({ first: '', last: '', hut_number: '', room: '', email: '', phone: '', debug_mode: false });
+        setHutSearch('');
         setConflictFields([]);
         triggerRefresh?.();
       } else {
@@ -98,7 +152,41 @@ export default function BookingForm({ triggerRefresh, token }) {
           </div>
         </div>
 
-        {['hut_number', 'room', 'email', 'phone'].map((field) => (
+        <div style={styles.inputGroup}>
+          <label style={styles.label}>Hut</label>
+          <input
+            value={hutSearch}
+            onChange={(e) => setHutSearch(e.target.value)}
+            placeholder="Search hut, zone, or status"
+            style={styles.input}
+          />
+          <select
+            name="hut_number"
+            value={form.hut_number}
+            onChange={handlePalapaSelect}
+            style={{ ...styles.input, ...(conflictFields.includes('hut_number') ? styles.conflict : {}) }}
+            required
+            disabled={loadingPalapas}
+          >
+            <option value="">{loadingPalapas ? 'Loading huts...' : 'Select a hut'}</option>
+            {filteredPalapas.map((palapa) => (
+              <option key={`${palapa.id}-${palapa.name}`} value={palapa.name}>
+                {palapa.name} - {palapa.status_label} - {palapa.booking_time} - {palapa.zone_name || 'No zone'}
+              </option>
+            ))}
+          </select>
+          {palapaError && <div style={styles.inlineError}>{palapaError}</div>}
+          {selectedPalapa && (
+            <div style={styles.hutSummary}>
+              <strong>{selectedPalapa.status_label}</strong>
+              <span>{selectedPalapa.palapatype_name || 'Palapa'}</span>
+              <span>Opens {selectedPalapa.booking_time}</span>
+              {palapasDate && <span>{palapasDate}</span>}
+            </div>
+          )}
+        </div>
+
+        {['room', 'email', 'phone'].map((field) => (
           <div key={field} style={styles.inputGroup}>
             <label style={styles.label}>
               {field.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}
@@ -186,6 +274,22 @@ const styles = {
   conflict: {
     borderColor: '#b00020',
     backgroundColor: '#ffeaea'
+  },
+  hutSummary: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '0.5rem',
+    fontSize: '0.85rem',
+    color: '#333',
+    background: '#eef7f8',
+    border: '1px solid #cfe6e8',
+    borderRadius: '6px',
+    padding: '0.6rem'
+  },
+  inlineError: {
+    color: '#b00020',
+    fontWeight: '600',
+    fontSize: '0.85rem'
   },
   checkboxRow: {
     display: 'flex',

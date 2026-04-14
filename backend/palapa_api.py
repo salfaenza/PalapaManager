@@ -11,6 +11,8 @@ dynamodb = boto3.resource("dynamodb")
 users_table = dynamodb.Table("palapa-users")
 scheduler = boto3.client("scheduler")
 
+BASE_URL = "https://marriottarubasurfclub.ipoolside.com"
+SEATING_URL = f"{BASE_URL}/seating/next-day-reservation"
 TARGET_LAMBDA_ARN = "arn:aws:lambda:us-east-1:561031966991:function:execute-palapa-booking"
 DEBUG_TARGET_LAMBDA_ARN = "arn:aws:lambda:us-east-1:561031966991:function:execute-palapa-booking-debug"
 INVOKE_ROLE_ARN = "arn:aws:iam::561031966991:role/InvokePalapaLambdaRole"
@@ -201,6 +203,18 @@ def lambda_handler(event, context):
     # GET /bookings
     if method == "GET" and path == "/bookings":
         return get_all_bookings_from_schedules(role, email)
+
+    # GET /palapas
+    if method == "GET" and path == "/palapas":
+        try:
+            book_date = get_query_param(event, "book_date") or default_book_date()
+            return cors_response(200, {
+                "book_date": book_date,
+                "palapas": fetch_palapa_options(book_date)
+            })
+        except Exception as e:
+            print("Error fetching palapas:", str(e))
+            return cors_response(500, {"error": str(e)})
 
     # POST /bookings
     if method == "POST" and path == "/bookings":
@@ -411,6 +425,16 @@ def get_requested_log_group(event):
     return STANDARD_LOG_GROUP
 
 
+def get_query_param(event, name, default=None):
+    params = event.get("queryStringParameters") or {}
+    return params.get(name, default)
+
+
+def default_book_date():
+    local = pytz.timezone("America/New_York")
+    return (datetime.now(local) + timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 def get_all_bookings_from_schedules(role, email):
     schedules = []
     try:
@@ -463,37 +487,117 @@ def extract_schedule_name(messages):
     return None
 
 
-def fetch_palapa_details(hut_number):
-    today = datetime.today()
-    tomorrow_str = (today + timedelta(days=1)).strftime('%Y-%m-%d')
+def marriott_session():
     s = requests.Session()
+    s.get(BASE_URL, timeout=10)
+    s.get(SEATING_URL, timeout=10)
+    s.get(f"{BASE_URL}/api/translations/translations?language=en&return_as=dict", timeout=10)
+    s.get(f"{BASE_URL}/api/auth/sites-session", timeout=10)
+    login_response = s.get(f"{BASE_URL}/api/auth/login-session", timeout=10)
     try:
-        s.get('https://marriottarubasurfclub.ipoolside.com')
-        s.get('https://marriottarubasurfclub.ipoolside.com/api/translations/translations?language=en&return_as=dict')
-        s.get('https://marriottarubasurfclub.ipoolside.com/api/auth/sites-session')
-        s.get('https://marriottarubasurfclub.ipoolside.com/api/auth/login-session')
+        csrf_token = login_response.json().get("csrf_token")
+    except Exception:
+        csrf_token = None
+    csrf_token = csrf_token or s.cookies.get('csrftoken')
 
-        csrf_token = s.cookies.get('csrftoken')
-        s.headers.update({
-            "Content-Type": "text/plain;charset=UTF-8",
-            "Referer": "https://marriottarubasurfclub.ipoolside.com/",
-            "X-CSRFToken": csrf_token
-        })
+    s.headers.update({
+        "Accept": "*/*",
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Language": "en",
+        "Locale": "en-US",
+        "Origin": BASE_URL,
+        "Referer": SEATING_URL,
+        "X-CSRFToken": csrf_token or "",
+        "X-Requested-With": "XMLHttpRequest",
+    })
+    return s
 
-        palapas = s.post("https://marriottarubasurfclub.ipoolside.com/api/palapa/get-palapas",
-                         json={"seating_name": None}).json().get('palapas', [])
 
-        palapa = next((p for p in palapas if p.get("name") == hut_number), None)
-        if not palapa:
+def status_label(status):
+    labels = {
+        1: "Available",
+        2: "Booked",
+        5: "Closed",
+        7: "Reserved",
+        50: "In cart",
+    }
+    return labels.get(status, f"Status {status}" if status is not None else "Unknown")
+
+
+def sort_palapa_key(item):
+    order_idx = item.get("order_idx")
+    if isinstance(order_idx, int):
+        return (order_idx, item.get("name", ""))
+    try:
+        return (int(order_idx), item.get("name", ""))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return (int(item.get("name", 999999)), item.get("name", ""))
+    except (TypeError, ValueError):
+        return (999999, item.get("name", ""))
+
+
+def fetch_palapa_options(book_date):
+    s = marriott_session()
+    try:
+        palapas = s.post(
+            f"{BASE_URL}/api/palapa/get-palapas",
+            json={"seating_name": None},
+            timeout=15,
+        ).json().get('palapas', [])
+
+        bookings = s.post(
+            f"{BASE_URL}/api/palapa/booking/get-auto-update-bookings/1",
+            json={"book_date": book_date},
+            timeout=15,
+        ).json().get('bookings', [])
+
+        bookings_by_palapa = {booking.get("palapa_id"): booking for booking in bookings}
+        options = []
+        for palapa in palapas:
+            if not palapa.get("name"):
+                continue
+            booking = bookings_by_palapa.get(palapa.get("id")) or {}
+            status = booking.get("status")
+            slot1_status = booking.get("slot1_status")
+            option = {
+                "id": palapa.get("id"),
+                "name": palapa.get("name"),
+                "long_name": palapa.get("long_name") or palapa.get("palapa_long_name", ""),
+                "palapatype_name": palapa.get("palapatype_name", ""),
+                "zone_name": palapa.get("zone_name", ""),
+                "booking_id": booking.get("id"),
+                "booking_time": booking.get("advanced_booking_time", "07:00"),
+                "book_date": booking.get("book_date", book_date),
+                "order_idx": booking.get("order_idx"),
+                "status": status,
+                "slot1_status": slot1_status,
+                "status_label": status_label(status),
+                "available": status == 1 and slot1_status == 1,
+                "price": booking.get("price"),
+                "fullday_booked": booking.get("fullday_booked"),
+            }
+            options.append(option)
+
+        return sorted(options, key=sort_palapa_key)
+    except Exception as e:
+        print("Marriott API error:", str(e))
+        raise
+
+
+def fetch_palapa_details(hut_number):
+    try:
+        options = fetch_palapa_options(default_book_date())
+        option = next((p for p in options if p.get("name") == hut_number), None)
+        if not option:
             return None
-
-        bookings = s.post("https://marriottarubasurfclub.ipoolside.com/api/palapa/booking/get-bookings/1",
-                          json={"book_date": tomorrow_str}).json().get('bookings', [])
-
-        booking = next((b for b in bookings if b.get("palapa_id") == palapa["id"]), None)
-        palapa["advanced_booking_time"] = booking.get("advanced_booking_time", "07:00") if booking else "07:00"
-
-        return palapa
+        return {
+            "id": option.get("id"),
+            "name": option.get("name"),
+            "palapatype_name": option.get("palapatype_name", ""),
+            "advanced_booking_time": option.get("booking_time", "07:00"),
+        }
     except Exception as e:
         print("Marriott API error:", str(e))
         return None
