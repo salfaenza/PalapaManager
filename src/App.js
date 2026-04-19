@@ -65,6 +65,16 @@ function App() {
   );
 
   useEffect(() => {
+    // Dev bypass: skip Google auth when using a local mock backend
+    const api = process.env.REACT_APP_API_URL || '';
+    if (api.includes('localhost')) {
+      setUserEmail('sfaenza10@gmail.com');
+      setUserRole('admin');
+      setToken('dev-mock-token');
+      setLoading(false);
+      return;
+    }
+
     const storedToken = localStorage.getItem('token');
     const storedEmail = localStorage.getItem('userEmail');
 

@@ -1,0 +1,87 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  STACK_NAME: palapa-backend
+  ARTIFACTS_BUCKET: palapa-deploy-artifacts-${{ secrets.AWS_ACCOUNT_ID }}
+
+jobs:
+  deploy:
+    name: Deploy Backend Stack
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # --- Ensure S3 bucket for CloudFormation artifacts ---
+      - name: Ensure artifacts bucket
+        run: |
+          aws s3api head-bucket --bucket "$ARTIFACTS_BUCKET" 2>/dev/null || \
+            aws s3 mb "s3://$ARTIFACTS_BUCKET" --region "$AWS_REGION"
+
+      # --- Build Lambda packages ---
+      - name: Package API Lambda
+        run: |
+          mkdir -p backend/build-api
+          cp backend/palapa_api.py backend/build-api/
+
+      - name: Package Executor Lambda
+        run: |
+          mkdir -p backend/build-executor
+          cp backend/palappa.py backend/build-executor/
+
+      - name: Package Debug Executor Lambda
+        run: |
+          mkdir -p backend/build-executor-debug
+          cp backend/palappa_debug.py backend/build-executor-debug/
+          cp backend/palappa.py backend/build-executor-debug/
+
+      # --- Deploy CloudFormation stack ---
+      - name: Package CloudFormation template
+        run: |
+          aws cloudformation package \
+            --template-file backend/template.yml \
+            --s3-bucket "$ARTIFACTS_BUCKET" \
+            --output-template-file backend/packaged.yml
+
+      - name: Deploy stack
+        run: |
+          aws cloudformation deploy \
+            --template-file backend/packaged.yml \
+            --stack-name "$STACK_NAME" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              GoogleClientId=${{ secrets.GOOGLE_CLIENT_ID }} \
+              AiohttpLayerArn=${{ secrets.AIOHTTP_LAYER_ARN }} \
+              PytzLayerArn=${{ secrets.PYTZ_LAYER_ARN }} \
+              RequestsLayerArn=${{ secrets.REQUESTS_LAYER_ARN }} \
+              CreateDynamoDBTables=true
+
+      - name: Print API URL
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
+            --output text

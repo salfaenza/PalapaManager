@@ -1,325 +1,785 @@
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import PalapaMap from './PalapaMap';
 
-import React, { useEffect, useMemo, useState } from 'react';
+function todayIsoInAruba(offsetDays = 1) {
+  const now = new Date();
+  const arubaMs = now.getTime() + now.getTimezoneOffset() * 60 * 1000 - 4 * 60 * 60 * 1000;
+  const aruba = new Date(arubaMs + offsetDays * 24 * 60 * 60 * 1000);
+  const y = aruba.getUTCFullYear();
+  const m = String(aruba.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(aruba.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function timeAgo(ts) {
+  const diff = Date.now() - ts;
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
+}
+
+function checkLogSuccess(messages = []) {
+  return messages.some(m =>
+    m.includes('"success": "ok"') || m.includes("'success': 'ok'")
+  );
+}
+
+function parseLogBookingInfo(messages = []) {
+  for (const msg of messages) {
+    if (msg.includes("'id':") || msg.includes('"id":') || msg.trim().startsWith('{')) {
+      try {
+        const start = msg.indexOf('{');
+        if (start === -1) continue;
+        const normalized = msg.slice(start)
+          .replace(/'/g, '"').replace(/\bNone\b/g, 'null')
+          .replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false');
+        const parsed = JSON.parse(normalized);
+        const info = parsed?.event || parsed;
+        if (info && (info.name || info.hut_number)) return info;
+      } catch { /* skip */ }
+    }
+  }
+  return null;
+}
+
+const ONBOARDING_STEPS = [
+  { num: 1, label: 'Profile' },
+  { num: 2, label: 'Pick Huts' },
+  { num: 3, label: 'Schedule' },
+];
 
 export default function BookingForm({ triggerRefresh, token }) {
-  const [form, setForm] = useState({
-    first: '',
-    last: '',
-    hut_number: '',
-    room: '',
-    email: '',
-    phone: '',
-    debug_mode: false
-  });
+  const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [conflictFields, setConflictFields] = useState([]);
+  const [bookDate, setBookDate] = useState(todayIsoInAruba(1));
+
+  // Multi-profile state
+  const [profiles, setProfiles] = useState([]);
+  const [profilesLoading, setProfilesLoading] = useState(true);
+  const [profileError, setProfileError] = useState('');
+  const [editingProfile, setEditingProfile] = useState(null); // null | 'new' | profile id
+  const [profileForm, setProfileForm] = useState({ first: '', last: '', email: '', phone: '', room: '' });
+  const [profileSaving, setProfileSaving] = useState(false);
+
   const [palapas, setPalapas] = useState([]);
   const [palapasDate, setPalapasDate] = useState('');
   const [loadingPalapas, setLoadingPalapas] = useState(false);
   const [palapaError, setPalapaError] = useState('');
   const [hutSearch, setHutSearch] = useState('');
-  const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+  const [showUnavailable, setShowUnavailable] = useState(false);
 
+  const [hutChoices, setHutChoices] = useState([]);
+  const [viewMode, setViewMode] = useState('map');
+  const [debugMode, setDebugMode] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [booking, setBooking] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [statusAlerts, setStatusAlerts] = useState([]);
+  const prevStatusRef = useRef({});
+
+  // Feature states
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [countdown, setCountdown] = useState('');
+  const [bookingStatus, setBookingStatus] = useState(null);
+  const [recentLogs, setRecentLogs] = useState([]);
+
+  // Onboarding wizard — null = normal mode, 1/2/3 = guided step
+  const [onboardingStep, setOnboardingStep] = useState(null);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+
+  const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
+
+  // --- Load profiles ---
+  const fetchProfiles = useCallback(async () => {
+    setProfilesLoading(true);
+    setProfileError('');
+    try {
+      const res = await fetch(`${API}/profiles`, { headers: authHeaders });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load profiles');
+      setProfiles(Array.isArray(data) ? data : []);
+    } catch (err) {
+      // Silently fall through — empty profiles triggers onboarding instead of an error wall
+      setProfiles([]);
+    } finally {
+      setProfilesLoading(false);
+    }
+  }, [API, authHeaders]);
+
+  useEffect(() => { fetchProfiles(); }, [fetchProfiles]);
+
+  // Activate onboarding when no profiles exist after initial load
   useEffect(() => {
-    const loadPalapas = async () => {
-      setLoadingPalapas(true);
-      setPalapaError('');
-      try {
-        const res = await fetch(`${API}/palapas`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to load huts');
-        setPalapas(Array.isArray(data.palapas) ? data.palapas : []);
-        setPalapasDate(data.book_date || '');
-      } catch (err) {
-        setPalapaError(err.message || 'Failed to load huts');
-      } finally {
-        setLoadingPalapas(false);
+    if (!profilesLoading && profiles.length === 0 && !onboardingDismissed) {
+      setOnboardingStep(1);
+      setEditingProfile('new');
+      setProfileForm({ first: '', last: '', email: '', phone: '', room: '' });
+      setProfileError('');
+    }
+  }, [profilesLoading, profiles.length, onboardingDismissed]);
+
+  // --- Profile CRUD ---
+  const startAddProfile = () => {
+    setEditingProfile('new');
+    setProfileForm({ first: '', last: '', email: '', phone: '', room: '' });
+    setProfileError('');
+  };
+
+  const startEditProfile = (p) => {
+    setEditingProfile(p.id);
+    setProfileForm({ first: p.first || '', last: p.last || '', email: p.email || '', phone: p.phone || '', room: p.room || '' });
+    setProfileError('');
+  };
+
+  const cancelEditProfile = () => {
+    setEditingProfile(null);
+    setProfileForm({ first: '', last: '', email: '', phone: '', room: '' });
+    setProfileError('');
+  };
+
+  const saveProfile = async () => {
+    if (profileSaving) return;
+    if (!profileForm.email.trim()) { setProfileError('Email is required'); return; }
+    setProfileSaving(true);
+    setProfileError('');
+    try {
+      const isNew = editingProfile === 'new';
+      const url = isNew ? `${API}/profiles` : `${API}/profiles/${encodeURIComponent(editingProfile)}`;
+      const method = isNew ? 'POST' : 'PATCH';
+      const res = await fetch(url, { method, headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(profileForm) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save profile');
+      cancelEditProfile();
+      await fetchProfiles();
+      // Advance onboarding to step 2 after first profile saved
+      if (onboardingStep === 1) setOnboardingStep(2);
+    } catch (err) {
+      setProfileError(err.message || 'Failed to save profile');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const deleteProfile = async (id) => {
+    if (!window.confirm('Delete this profile?')) return;
+    try {
+      const res = await fetch(`${API}/profiles/${encodeURIComponent(id)}`, { method: 'DELETE', headers: authHeaders });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete');
+      fetchProfiles();
+    } catch (err) {
+      setProfileError(err.message || 'Failed to delete profile');
+    }
+  };
+
+  // --- Refresh palapas (reusable) ---
+  const refreshPalapas = useCallback(async () => {
+    if (!bookDate) return;
+    setLoadingPalapas(true);
+    setPalapaError('');
+    try {
+      const res = await fetch(`${API}/palapas?book_date=${encodeURIComponent(bookDate)}`, { headers: authHeaders });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load huts');
+      setPalapas(Array.isArray(data.palapas) ? data.palapas : []);
+      setPalapasDate(data.book_date || bookDate);
+      setLastRefresh(new Date());
+    } catch (err) {
+      setPalapaError(err.message || 'Failed to load huts');
+    } finally {
+      setLoadingPalapas(false);
+    }
+  }, [API, authHeaders, bookDate]);
+
+  useEffect(() => { refreshPalapas(); }, [refreshPalapas]);
+
+  // --- Monitor selected huts for status changes ---
+  useEffect(() => {
+    if (!hutChoices.length || !palapas.length) return;
+    const byName = {};
+    palapas.forEach((p) => { byName[String(p.name)] = p; });
+    const prev = prevStatusRef.current;
+    const alerts = [];
+    hutChoices.forEach((hut) => {
+      const p = byName[hut];
+      if (!p) return;
+      const prevEntry = prev[hut];
+      if (prevEntry && prevEntry.available && !p.available) {
+        const label = p.status === 5 ? 'Staff Hold' : p.status === 2 ? 'Booked' : p.status_label || 'Unavailable';
+        alerts.push({ hut, label, status: p.status });
       }
-    };
-    loadPalapas();
-  }, [API, token]);
+    });
+    if (alerts.length) setStatusAlerts((a) => [...a, ...alerts]);
+    const snap = {};
+    hutChoices.forEach((hut) => {
+      const p = byName[hut];
+      if (p) snap[hut] = { available: p.available, status: p.status };
+    });
+    prevStatusRef.current = snap;
+  }, [palapas, hutChoices]);
 
-  const filteredPalapas = useMemo(() => {
-    const needle = hutSearch.trim().toLowerCase();
-    if (!needle) return palapas.slice(0, 80);
-    return palapas.filter((palapa) =>
-      [
-        palapa.name,
-        palapa.zone_name,
-        palapa.palapatype_name,
-        palapa.status_label
-      ].some((value) => String(value || '').toLowerCase().includes(needle))
-    ).slice(0, 80);
-  }, [hutSearch, palapas]);
+  // --- Derived data ---
+  const availablePalapas = useMemo(() => palapas.filter((p) => p.available), [palapas]);
 
-  const selectedPalapa = useMemo(
-    () => palapas.find((palapa) => String(palapa.name) === String(form.hut_number)),
-    [palapas, form.hut_number]
+  const primaryPalapa = useMemo(
+    () => palapas.find((p) => String(p.name) === String(hutChoices[0])),
+    [palapas, hutChoices]
   );
 
-  const handleChange = (e) => {
-    const { name, type, checked, value } = e.target;
-    setForm({ ...form, [name]: type === 'checkbox' ? checked : value });
-    setError('');
-    setSuccess('');
-    setConflictFields([]);
-  };
+  const bookNowStatus = useMemo(() => {
+    if (!primaryPalapa) return { enabled: false, reason: 'Pick a hut first' };
+    const { allowed, label } = bookNowWindow(bookDate, primaryPalapa);
+    if (!allowed) return { enabled: false, reason: `Available after ${label}` };
+    return { enabled: true, reason: '' };
+  }, [bookDate, primaryPalapa]);
 
-  const handlePalapaSelect = (e) => {
-    const hutNumber = e.target.value;
-    setForm({ ...form, hut_number: hutNumber });
-    setError('');
-    setSuccess('');
-    setConflictFields([]);
-  };
+  const types = useMemo(() => [...new Set(palapas.map(p => p.palapatype_name).filter(Boolean))], [palapas]);
+
+  const filteredPalapas = useMemo(() => {
+    let pool = showUnavailable ? palapas : availablePalapas;
+    if (typeFilter !== 'all') pool = pool.filter(p => p.palapatype_name === typeFilter);
+    const needle = hutSearch.trim().toLowerCase();
+    if (!needle) return pool.slice(0, 120);
+    return pool.filter((p) =>
+      [p.name, p.zone_name, p.palapatype_name, p.status_label]
+        .some((v) => String(v || '').toLowerCase().includes(needle))
+    ).slice(0, 120);
+  }, [hutSearch, palapas, availablePalapas, showUnavailable, typeFilter]);
+
+  // --- Adaptive auto-polling ---
+  useEffect(() => {
+    if (!bookDate) return;
+    const getDelay = () => {
+      if (!primaryPalapa) return 5 * 60 * 1000;
+      const { windowStartMs } = bookNowWindow(bookDate, primaryPalapa);
+      const msUntil = windowStartMs - Date.now();
+      if (msUntil <= 0 && msUntil > -60 * 60 * 1000) return 60 * 1000;
+      if (msUntil > 0 && msUntil <= 30 * 60 * 1000) return 2 * 60 * 1000;
+      return 5 * 60 * 1000;
+    };
+    let timer;
+    const schedule = () => {
+      timer = setTimeout(() => { refreshPalapas(); schedule(); }, getDelay());
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, [bookDate, primaryPalapa, refreshPalapas]);
+
+  // --- Countdown timer ---
+  useEffect(() => {
+    if (!primaryPalapa || !bookDate) { setCountdown(''); return; }
+    const { windowStartMs } = bookNowWindow(bookDate, primaryPalapa);
+    const tick = () => {
+      const diff = windowStartMs - Date.now();
+      if (diff <= 0) { setCountdown('open'); return; }
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      setCountdown(h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [primaryPalapa, bookDate]);
+
+  // --- Fetch recent logs ---
+  useEffect(() => {
+    fetch(`${API}/logs`, { headers: authHeaders })
+      .then(res => res.json())
+      .then(data => {
+        setRecentLogs((data.streams || [])
+          .sort((a, b) => (b.lastEventTime || 0) - (a.lastEventTime || 0))
+          .slice(0, 5));
+      })
+      .catch(() => {});
+  }, [API, authHeaders]);
+
+  // --- Hut choice ---
+  const addHutChoice = (name) => { if (!name) return; setError(''); setSuccess(''); setHutChoices((prev) => (prev.includes(String(name)) ? prev : [...prev, String(name)])); };
+  const removeHutChoice = (name) => setHutChoices((prev) => prev.filter((h) => h !== String(name)));
+  const moveHutChoice = (name, delta) => setHutChoices((prev) => {
+    const idx = prev.indexOf(String(name)); if (idx < 0) return prev;
+    const next = [...prev]; const t = idx + delta; if (t < 0 || t >= next.length) return prev;
+    [next[idx], next[t]] = [next[t], next[idx]]; return next;
+  });
+
+  // --- Submit (profile auto-assigned by backend) ---
+  const submitBody = () => ({ book_date: bookDate, hut_choices: hutChoices, debug_mode: debugMode });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (submitting) return;
-    setSubmitting(true);
-
-    const submission = {
-      ...form,
-      name: `${form.first} ${form.last}`.trim()
-    };
-
+    if (!hutChoices.length) { setError('Choose at least one hut.'); return; }
+    if (!profiles.length) { setError('Add at least one profile first.'); return; }
+    setSubmitting(true); setError(''); setSuccess('');
     try {
-      const res = await fetch(`${API}/bookings`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify(submission)
-      });
-
+      const res = await fetch(`${API}/bookings`, { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(submitBody()) });
       const data = await res.json();
-
       if (res.ok) {
-        setSuccess(form.debug_mode ? "Debug booking scheduled!" : "Booking scheduled!");
-        setForm({ first: '', last: '', hut_number: '', room: '', email: '', phone: '', debug_mode: false });
-        setHutSearch('');
-        setConflictFields([]);
-        triggerRefresh?.();
-      } else {
-        if (data?.messages?.length) {
-          setError(data.messages.join(" "));
-        } else if (data?.conflicting_fields?.length) {
-          setConflictFields(data.conflicting_fields);
-          setError(`Conflict with: ${data.conflicting_fields.join(', ')}`);
-        } else {
-          setError(data?.error || "Failed to schedule booking");
-        }
-      }
-    } catch (err) {
-      setError("Network or server error occurred");
-    }
-
-    setSubmitting(false);
+        const profileNote = data.profile_name ? ` (profile: ${data.profile_name})` : '';
+        setSuccess((debugMode ? 'Debug booking scheduled!' : 'Booking scheduled!') + profileNote);
+        setHutChoices([]); setHutSearch(''); triggerRefresh?.();
+      } else setError(data.error || 'Failed to schedule booking');
+    } catch { setError('Network or server error occurred'); }
+    finally { setSubmitting(false); }
   };
 
-  return (
-    <div style={styles.container}>
-      <h2 style={styles.heading}>Schedule a Palapa Booking</h2>
-      <form onSubmit={handleSubmit} style={styles.form}>
-        <div style={styles.nameRow}>
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>First Name</label>
-            <input
-              name="first"
-              value={form.first}
-              onChange={handleChange}
-              placeholder="First Name"
-              style={{ ...styles.input, ...(conflictFields.includes('first') ? styles.conflict : {}) }}
-              required
-            />
+  const handleBookNow = async () => {
+    if (booking) return;
+    if (!hutChoices.length) { setError('Choose at least one hut.'); return; }
+    if (!profiles.length) { setError('Add at least one profile first.'); return; }
+    setBooking(true); setError(''); setSuccess('');
+    setBookingStatus({ state: 'sending', huts: [...hutChoices] });
+    try {
+      const res = await fetch(`${API}/bookings/now`, { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(submitBody()) });
+      const data = await res.json();
+      if (res.ok || res.status === 202) {
+        setBookingStatus({ state: 'triggered', huts: data.hut_choices || hutChoices, id: data.id, profileName: data.profile_name, startTime: Date.now() });
+        setHutChoices([]);
+        triggerRefresh?.(3000);
+      } else if (res.status === 403 && data.allowed_after_local) {
+        setBookingStatus(null);
+        setError(`Too early. Try again after ${data.allowed_after_local}.`);
+      } else {
+        setBookingStatus(null);
+        setError(data.error || 'Failed to trigger booking');
+      }
+    } catch {
+      setBookingStatus(null);
+      setError('Network or server error occurred');
+    } finally { setBooking(false); }
+  };
+
+  // Advance onboarding when huts are picked
+  const onboardingReady = onboardingStep === 2 && hutChoices.length > 0;
+
+  const exitOnboarding = () => {
+    setOnboardingStep(null);
+    setOnboardingDismissed(true);
+  };
+
+  // --- Render helpers ---
+  const renderStepIndicator = () => (
+    <div className="ob-steps">
+      {ONBOARDING_STEPS.map((s) => (
+        <div key={s.num} className={`ob-step ${onboardingStep === s.num ? 'ob-step--active' : ''} ${onboardingStep > s.num ? 'ob-step--done' : ''}`}>
+          <span className="ob-step-num">{onboardingStep > s.num ? '\u2713' : s.num}</span>
+          <span className="ob-step-label">{s.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderProfilesSection = () => (
+    <div className="section" style={{ marginBottom: '0.75rem' }}>
+      <h3 className="section-heading">
+        Booking Profiles
+        {!profilesLoading && <span className="text-muted" style={{ fontWeight: 400 }}> ({profiles.length} saved)</span>}
+      </h3>
+
+      {profilesLoading ? <p className="text-muted">Loading profiles...</p> : (
+        <>
+          {profiles.length === 0 && !editingProfile && (
+            <p className="text-muted">No profiles yet. Add one to get started.</p>
+          )}
+
+          <div className="profiles-list">
+            {profiles.map((p) => (
+              editingProfile === p.id ? (
+                <ProfileFormInline key={p.id} form={profileForm} onChange={setProfileForm} onSave={saveProfile} onCancel={cancelEditProfile} saving={profileSaving} error={profileError} />
+              ) : (
+                <div key={p.id} className="profile-card">
+                  <div className="profile-card-info">
+                    <strong>{p.name || `${p.first} ${p.last}`.trim() || '\u2014'}</strong>
+                    <span className="text-muted">{p.email}</span>
+                    <span className="text-muted">Room {p.room || '\u2014'}</span>
+                  </div>
+                  <div className="profile-card-actions">
+                    <button type="button" onClick={() => startEditProfile(p)} className="btn btn-ghost btn-sm">Edit</button>
+                    <button type="button" onClick={() => deleteProfile(p.id)} className="btn btn-danger btn-sm">Del</button>
+                  </div>
+                </div>
+              )
+            ))}
           </div>
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Last Name</label>
-            <input
-              name="last"
-              value={form.last}
-              onChange={handleChange}
-              placeholder="Last Name"
-              style={{ ...styles.input, ...(conflictFields.includes('last') ? styles.conflict : {}) }}
-              required
-            />
+
+          {editingProfile === 'new' ? (
+            <ProfileFormInline form={profileForm} onChange={setProfileForm} onSave={saveProfile} onCancel={cancelEditProfile} saving={profileSaving} error={profileError} isNew />
+          ) : (
+            <button type="button" onClick={startAddProfile} className="btn btn-ghost btn-sm" style={{ marginTop: '0.4rem' }}>+ Add Profile</button>
+          )}
+
+          {profileError && editingProfile === null && <div className="msg-error" style={{ marginTop: '0.4rem' }}>{profileError}</div>}
+        </>
+      )}
+    </div>
+  );
+
+  const renderHutSelection = () => (
+    <>
+      <div className="section">
+        <h3 className="section-heading">Booking Date</h3>
+        <input type="date" value={bookDate} min={todayIsoInAruba(0)} onChange={(e) => { setBookDate(e.target.value); setHutChoices([]); setTypeFilter('all'); }} className="input" />
+        {palapasDate && <p className="text-muted" style={{ marginTop: '0.3rem' }}>Showing availability for {palapasDate}</p>}
+      </div>
+
+      <div className="section">
+        <div className="hut-section-header">
+          <h3 className="section-heading" style={{ margin: 0 }}>Available Huts {!loadingPalapas && <span className="text-muted" style={{ fontWeight: 400 }}>({availablePalapas.length} available)</span>}</h3>
+          <div className="hut-section-actions">
+            <button type="button" onClick={refreshPalapas} className="btn btn-ghost btn-sm refresh-btn" disabled={loadingPalapas} title="Refresh availability">
+              {loadingPalapas ? '\u2026' : '\u21BB'}
+            </button>
+            <div className="view-toggle">
+              <button type="button" className={`view-toggle-btn ${viewMode === 'grid' ? 'view-toggle-btn--active' : ''}`} onClick={() => setViewMode('grid')}>Grid</button>
+              <button type="button" className={`view-toggle-btn ${viewMode === 'map' ? 'view-toggle-btn--active' : ''}`} onClick={() => setViewMode('map')}>Map</button>
+            </div>
           </div>
         </div>
 
-        <div style={styles.inputGroup}>
-          <label style={styles.label}>Hut</label>
-          <input
-            value={hutSearch}
-            onChange={(e) => setHutSearch(e.target.value)}
-            placeholder="Search hut, zone, or status"
-            style={styles.input}
-          />
-          <select
-            name="hut_number"
-            value={form.hut_number}
-            onChange={handlePalapaSelect}
-            style={{ ...styles.input, ...(conflictFields.includes('hut_number') ? styles.conflict : {}) }}
-            required
-            disabled={loadingPalapas}
-          >
-            <option value="">{loadingPalapas ? 'Loading huts...' : 'Select a hut'}</option>
-            {filteredPalapas.map((palapa) => (
-              <option key={`${palapa.id}-${palapa.name}`} value={palapa.name}>
-                {palapa.name} - {palapa.status_label} - {palapa.booking_time} - {palapa.zone_name || 'No zone'}
-              </option>
-            ))}
-          </select>
-          {palapaError && <div style={styles.inlineError}>{palapaError}</div>}
-          {selectedPalapa && (
-            <div style={styles.hutSummary}>
-              <strong>{selectedPalapa.status_label}</strong>
-              <span>{selectedPalapa.palapatype_name || 'Palapa'}</span>
-              <span>Opens {selectedPalapa.booking_time}</span>
-              {palapasDate && <span>{palapasDate}</span>}
+        {lastRefresh && (
+          <p className="auto-refresh-info">Updated {timeAgo(lastRefresh.getTime())}</p>
+        )}
+
+        {loadingPalapas && <p className="text-muted">Loading huts...</p>}
+        {palapaError && <p className="msg-error" style={{ marginTop: '0.4rem' }}>{palapaError}</p>}
+
+        {!loadingPalapas && palapas.length > 0 && (
+          <div className="filter-bar">
+            <div className="filter-group">
+              <span className="filter-label">Type</span>
+              <button type="button" className={`filter-pill ${typeFilter === 'all' ? 'filter-pill--active' : ''}`} onClick={() => setTypeFilter('all')}>All</button>
+              {types.map(t => (
+                <button key={t} type="button" className={`filter-pill ${typeFilter === t ? 'filter-pill--active' : ''}`} onClick={() => setTypeFilter(t)}>
+                  {t.replace(/ reservation/i, '')}
+                </button>
+              ))}
             </div>
+          </div>
+        )}
+
+        {viewMode === 'map' ? (
+          !loadingPalapas && palapas.length > 0 && (
+            <PalapaMap palapas={palapas} hutChoices={hutChoices} onAddChoice={addHutChoice} onRemoveChoice={removeHutChoice} typeFilter={typeFilter} />
+          )
+        ) : (
+          <>
+            <input value={hutSearch} onChange={(e) => setHutSearch(e.target.value)} placeholder="Search hut, zone, or type" className="input" />
+            <label className="checkbox-row" style={{ marginTop: '0.35rem' }}>
+              <input type="checkbox" checked={showUnavailable} onChange={(e) => setShowUnavailable(e.target.checked)} />
+              <span>Show unavailable huts</span>
+            </label>
+
+            {!loadingPalapas && filteredPalapas.length === 0 && (
+              <p className="text-muted" style={{ marginTop: '0.5rem' }}>
+                {availablePalapas.length === 0 ? 'No huts available for this date.' : 'No huts match your search.'}
+              </p>
+            )}
+
+            <div className="hut-grid">
+              {filteredPalapas.map((p) => {
+                const chosenIdx = hutChoices.indexOf(String(p.name));
+                const isChosen = chosenIdx >= 0;
+                const clickable = p.available && !isChosen;
+                const cls = ['hut-pill', isChosen && 'hut-pill--chosen', !p.available && 'hut-pill--unavailable', p.status === 5 && 'hut-pill--staff-hold'].filter(Boolean).join(' ');
+                return (
+                  <button type="button" key={`${p.id}-${p.name}`} className={cls} onClick={() => clickable && addHutChoice(p.name)} disabled={!clickable} title={p.lock_reason || p.status_label}>
+                    <strong>{p.name}</strong>
+                    <span>{p.palapatype_name || 'Palapa'}</span>
+                    <span className="text-muted">{p.zone_name || '\u2014'}</span>
+                    <span className="text-secondary">{p.status_label}</span>
+                    {isChosen && <span className="priority-badge">{chosenIdx + 1}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="section">
+        <h3 className="section-heading">Your Priority List</h3>
+        {hutChoices.length === 0 ? (
+          <p className="text-muted">Tap a hut above to add it as your primary choice. Add more as backups.</p>
+        ) : (
+          <ul className="priority-list">
+            {hutChoices.map((h, idx) => {
+              const palapa = palapas.find((p) => String(p.name) === h);
+              return (
+                <li key={h} className="priority-item">
+                  <div className="priority-label">
+                    <span className="priority-rank">{idx + 1}</span>
+                    <strong>{h}</strong>
+                    {palapa?.palapatype_name && <span className="text-muted">{palapa.palapatype_name}</span>}
+                    {palapa?.zone_name && <span className="text-muted">{palapa.zone_name}</span>}
+                  </div>
+                  <span className="priority-actions">
+                    <button type="button" onClick={() => moveHutChoice(h, -1)} disabled={idx === 0} className="btn btn-ghost btn-sm">&#8593;</button>
+                    <button type="button" onClick={() => moveHutChoice(h, 1)} disabled={idx === hutChoices.length - 1} className="btn btn-ghost btn-sm">&#8595;</button>
+                    <button type="button" onClick={() => removeHutChoice(h)} className="btn btn-danger btn-sm">&#10005;</button>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+
+  const renderScheduleActions = () => (
+    <>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={debugMode} onChange={(e) => setDebugMode(e.target.checked)} />
+        <span>Use debug Lambda</span>
+      </label>
+
+      {countdown && primaryPalapa && (
+        <div className={`countdown-bar ${countdown === 'open' ? 'countdown--open' : ''}`}>
+          {countdown === 'open' ? (
+            <>Booking window is <strong>OPEN</strong> for {primaryPalapa.palapatype_name?.replace(/ reservation/i, '')}</>
+          ) : (
+            <>{primaryPalapa.palapatype_name?.replace(/ reservation/i, '')} opens in <strong>{countdown}</strong></>
           )}
         </div>
+      )}
 
-        {['room', 'email', 'phone'].map((field) => (
-          <div key={field} style={styles.inputGroup}>
-            <label style={styles.label}>
-              {field.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}
-            </label>
-            <input
-              name={field}
-              type={field === 'email' ? 'email' : 'text'}
-              value={form[field]}
-              onChange={handleChange}
-              placeholder={`Enter ${field.replace('_', ' ')}`}
-              style={{ ...styles.input, ...(conflictFields.includes(field) ? styles.conflict : {}) }}
-              required
-            />
+      {statusAlerts.length > 0 && (
+        <div className="msg-warn">
+          <button type="button" className="dismiss-btn" onClick={() => setStatusAlerts([])}>&#10005;</button>
+          <strong>Status changed for your selected huts:</strong>
+          <ul>
+            {statusAlerts.map((a, i) => (
+              <li key={i}>{a.hut} is now <strong>{a.label}</strong></li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {error && <div className="msg-error">{error}</div>}
+      {success && <div className="msg-success">{success}</div>}
+
+      {bookingStatus && (
+        <div className={`booking-status-card booking-status--${bookingStatus.state}`}>
+          <button type="button" className="dismiss-btn" onClick={() => setBookingStatus(null)}>&#10005;</button>
+          <div className="booking-status-header">
+            {bookingStatus.state === 'sending' && <><span className="spinner-sm" /> Sending booking request...</>}
+            {bookingStatus.state === 'triggered' && <>Booking Triggered</>}
           </div>
-        ))}
+          <div className="booking-status-detail">
+            Huts: {bookingStatus.huts.join(' \u2192 ')}
+            {bookingStatus.profileName && <> &middot; Profile: {bookingStatus.profileName}</>}
+          </div>
+          {bookingStatus.state === 'triggered' && bookingStatus.startTime && (
+            <p className="text-muted" style={{ margin: '0.3rem 0 0' }}>
+              Started {timeAgo(bookingStatus.startTime)}. Check the Logs tab for results.
+            </p>
+          )}
+        </div>
+      )}
 
-        <label style={styles.checkboxRow}>
-          <input
-            name="debug_mode"
-            type="checkbox"
-            checked={form.debug_mode}
-            onChange={handleChange}
-            style={styles.checkbox}
-          />
-          <span>Use debug Lambda</span>
-        </label>
-
-        {error && <div style={styles.error}>{error}</div>}
-        {success && <div style={styles.success}>{success}</div>}
-        <button type="submit" style={styles.button} disabled={submitting}>
+      <div className="action-row">
+        <button type="submit" className="btn btn-primary" disabled={submitting || !hutChoices.length}>
           {submitting ? 'Scheduling...' : 'Schedule'}
         </button>
+        <button type="button" onClick={handleBookNow} className={`btn ${bookNowStatus.enabled ? 'btn-accent' : 'btn-ghost'}`} disabled={booking || !hutChoices.length || !bookNowStatus.enabled} title={bookNowStatus.reason}>
+          {booking ? 'Booking...' : 'Book Now'}
+        </button>
+      </div>
+      {!bookNowStatus.enabled && bookNowStatus.reason && (
+        <p className="book-now-hint">{bookNowStatus.reason}</p>
+      )}
+    </>
+  );
+
+  // --- Render ---
+
+  // ===== ONBOARDING WIZARD =====
+  if (onboardingStep) {
+    return (
+      <div className="card booking-form-wrap ob-wrap">
+        {renderStepIndicator()}
+
+        {/* Step 1 — Create Profile */}
+        {onboardingStep === 1 && (
+          <div className="ob-panel ob-fade-in">
+            <h2 className="ob-title">Welcome! Let's get you set up.</h2>
+            <p className="ob-subtitle">
+              First, create a booking profile. This is the guest info used when reserving your palapa through iPoolside (Marriots Website).
+            </p>
+            <div className="ob-card">
+              <ProfileFormInline
+                form={profileForm}
+                onChange={setProfileForm}
+                onSave={saveProfile}
+                onCancel={() => {}}
+                saving={profileSaving}
+                error={profileError}
+                isNew
+                hideCancelButton
+              />
+            </div>
+            <p className="ob-hint">
+              You can add more profiles later to book multiple palapas per day (one per profile).
+            </p>
+          </div>
+        )}
+
+        {/* Step 2 — Pick Huts */}
+        {onboardingStep === 2 && (
+          <div className="ob-panel ob-fade-in">
+            <h2 className="ob-title">Now, pick your huts.</h2>
+            <p className="ob-subtitle">
+              Select the palapa you want most first. Then add backups &mdash; if your first choice is taken, we'll
+              automatically try the next one in your list.
+            </p>
+
+            {renderHutSelection()}
+
+            <div className="ob-nav">
+              <button type="button" className="btn btn-ghost" onClick={() => setOnboardingStep(1)}>Back</button>
+              <button type="button" className="btn btn-primary" disabled={!onboardingReady} onClick={() => setOnboardingStep(3)}>
+                Continue
+              </button>
+            </div>
+            {!onboardingReady && <p className="ob-hint">Select at least one hut to continue.</p>}
+          </div>
+        )}
+
+        {/* Step 3 — Schedule */}
+        {onboardingStep === 3 && (
+          <div className="ob-panel ob-fade-in">
+            <h2 className="ob-title">Schedule your booking.</h2>
+            <p className="ob-subtitle">
+              When you hit <strong>Schedule</strong>, we'll automatically book your palapa the moment the reservation
+              window opens each day. No need to wake up early or race to the site.
+            </p>
+
+            <div className="ob-card">
+              <div className="ob-summary">
+                <div className="ob-summary-row">
+                  <span className="ob-summary-label">Profile</span>
+                  <span className="ob-summary-value">{profiles[0]?.name || profiles[0]?.email || '\u2014'}</span>
+                </div>
+                <div className="ob-summary-row">
+                  <span className="ob-summary-label">Date</span>
+                  <span className="ob-summary-value">{bookDate}</span>
+                </div>
+                <div className="ob-summary-row">
+                  <span className="ob-summary-label">Huts</span>
+                  <span className="ob-summary-value">{hutChoices.join(' \u2192 ')}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="ob-explain">
+              <h4>How it works</h4>
+              <ul>
+                <li>We monitor the booking window and submit your reservation the instant it opens.</li>
+                <li>If your first-choice hut is taken, we try the next one on your list automatically.</li>
+                <li>Add more profiles later to book a second palapa on the same day under a different name.</li>
+              </ul>
+            </div>
+
+            <form onSubmit={(e) => { handleSubmit(e); exitOnboarding(); }} className="booking-form">
+              {renderScheduleActions()}
+            </form>
+
+            <div className="ob-nav">
+              <button type="button" className="btn btn-ghost" onClick={() => setOnboardingStep(2)}>Back</button>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={exitOnboarding}>Skip tutorial</button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ===== NORMAL MODE =====
+  return (
+    <div className="card booking-form-wrap">
+      <h2 className="booking-form-title">Schedule a Palapa Booking</h2>
+
+      {renderProfilesSection()}
+
+      <form onSubmit={handleSubmit} className="booking-form">
+        {renderHutSelection()}
+        {renderScheduleActions()}
       </form>
+
+      {recentLogs.length > 0 && (
+        <div className="section recent-history" style={{ marginTop: '0.75rem' }}>
+          <h3 className="section-heading">Recent Activity</h3>
+          <div className="recent-list">
+            {recentLogs.map((log, i) => {
+              const ok = checkLogSuccess(log.messages);
+              const info = parseLogBookingInfo(log.messages);
+              const ago = log.lastEventTime ? timeAgo(log.lastEventTime) : '';
+              return (
+                <div key={i} className="recent-item">
+                  <span className={`recent-dot ${ok ? 'recent-dot--success' : 'recent-dot--fail'}`} />
+                  <span className="recent-name">{info?.name || info?.hut_number || log.streamName || 'Booking'}</span>
+                  <span className={`badge ${ok ? 'badge-success' : 'badge-danger'}`}>{ok ? 'Success' : 'Failed'}</span>
+                  {ago && <span className="text-muted">{ago}</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-const styles = {
-  container: {
-    background: '#f9f9f9',
-    padding: '1.5rem',
-    maxWidth: '600px',
-    width: '100%',
-    boxSizing: 'border-box',
-    margin: '2rem auto',
-    borderRadius: '10px',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.06)'
-  },
-  heading: {
-    marginBottom: '1.5rem',
-    textAlign: 'center',
-    color: '#333'
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '1rem',
-    width: '100%'
-  },
-  nameRow: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '1rem',
-    width: '100%'
-  },
-  inputGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: 1,
-    minWidth: 0,
-    width: '100%'
-  },
-  label: {
-    marginBottom: '0.25rem',
-    fontWeight: '600'
-  },
-  input: {
-    width: '100%',
-    padding: '0.6rem',
-    fontSize: '1rem',
-    borderRadius: '6px',
-    border: '1px solid #ccc',
-    boxSizing: 'border-box'
-  },
-  conflict: {
-    borderColor: '#b00020',
-    backgroundColor: '#ffeaea'
-  },
-  hutSummary: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '0.5rem',
-    fontSize: '0.85rem',
-    color: '#333',
-    background: '#eef7f8',
-    border: '1px solid #cfe6e8',
-    borderRadius: '6px',
-    padding: '0.6rem'
-  },
-  inlineError: {
-    color: '#b00020',
-    fontWeight: '600',
-    fontSize: '0.85rem'
-  },
-  checkboxRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-    fontWeight: '600'
-  },
-  checkbox: {
-    width: '1rem',
-    height: '1rem'
-  },
-  button: {
-    padding: '0.8rem',
-    fontSize: '1rem',
-    backgroundColor: '#007bff',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontWeight: 'bold',
-    width: '100%'
-  },
-  error: {
-    color: '#b00020',
-    fontWeight: 'bold',
-    textAlign: 'center'
-  },
-  success: {
-    color: '#0a972f',
-    fontWeight: 'bold',
-    textAlign: 'center'
-  }
-};
+function ProfileFormInline({ form, onChange, onSave, onCancel, saving, error, isNew, hideCancelButton }) {
+  return (
+    <div className="profile-edit-form">
+      <div className="field-row">
+        <div className="field-group">
+          <label className="label">First name</label>
+          <input type="text" value={form.first} onChange={(e) => onChange({ ...form, first: e.target.value })} className="input" placeholder="Sal" />
+        </div>
+        <div className="field-group">
+          <label className="label">Last name</label>
+          <input type="text" value={form.last} onChange={(e) => onChange({ ...form, last: e.target.value })} className="input" placeholder="Faenza" />
+        </div>
+      </div>
+      <div className="field-group">
+        <label className="label">Email (must be unique per profile)</label>
+        <input type="email" value={form.email} onChange={(e) => onChange({ ...form, email: e.target.value })} className="input" placeholder="you@example.com" />
+      </div>
+      <div className="field-row">
+        <div className="field-group">
+          <label className="label">Room number</label>
+          <input type="text" value={form.room} onChange={(e) => onChange({ ...form, room: e.target.value })} className="input" placeholder="4521" />
+        </div>
+        <div className="field-group">
+          <label className="label">Phone</label>
+          <input type="text" value={form.phone} onChange={(e) => onChange({ ...form, phone: e.target.value })} className="input" placeholder="555-123-4567" />
+        </div>
+      </div>
+      {error && <div className="msg-error">{error}</div>}
+      <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem' }}>
+        <button type="button" onClick={onSave} className="btn btn-success" disabled={saving}>{saving ? 'Saving...' : isNew ? 'Save Profile' : 'Save'}</button>
+        {!hideCancelButton && <button type="button" onClick={onCancel} className="btn btn-ghost btn-sm">Cancel</button>}
+      </div>
+    </div>
+  );
+}
+
+function bookNowWindow(bookDate, palapa) {
+  const palapatype = (palapa?.palapatype_name || '').toLowerCase();
+  const isSameDay = palapatype.includes('same day');
+  const bookingTime = palapa?.booking_time || (isSameDay ? '07:00' : '17:30');
+  const [h, m] = bookingTime.split(':').map((n) => parseInt(n, 10));
+  const [by, bm, bd] = bookDate.split('-').map((n) => parseInt(n, 10));
+  const fireUtcMs = Date.UTC(by, bm - 1, bd, h + 4, m || 0);
+  const adjustedMs = isSameDay ? fireUtcMs : fireUtcMs - 24 * 60 * 60 * 1000;
+  const dt = new Date(adjustedMs);
+  const allowed = Date.now() >= adjustedMs;
+  const label = dt.toLocaleString(undefined, { timeZone: 'America/Aruba', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return { allowed, windowStartMs: adjustedMs, label: `${label} (Aruba time)` };
+}

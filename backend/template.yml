@@ -1,0 +1,349 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Palapa Manager Backend — Lambda, API Gateway, DynamoDB, IAM
+
+# ──────────────────────────────────────────────────────────────
+# Parameters
+# ──────────────────────────────────────────────────────────────
+Parameters:
+  GoogleClientId:
+    Type: String
+    Description: Google OAuth 2.0 Client ID (JWT audience)
+
+  AiohttpLayerArn:
+    Type: String
+    Description: ARN of the Lambda layer containing aiohttp + deps
+
+  PytzLayerArn:
+    Type: String
+    Description: ARN of the Lambda layer containing pytz
+
+  RequestsLayerArn:
+    Type: String
+    Description: ARN of the Lambda layer containing requests + deps
+
+  UsersTableName:
+    Type: String
+    Default: palapa-users
+
+  ProfilesTableName:
+    Type: String
+    Default: palapa-profiles
+
+  CreateDynamoDBTables:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Set to true only on first deploy to a fresh account (tables don't exist yet)
+
+  ScheduleGroup:
+    Type: String
+    Default: default
+
+# ──────────────────────────────────────────────────────────────
+# Conditions
+# ──────────────────────────────────────────────────────────────
+Conditions:
+  ShouldCreateTables: !Equals [!Ref CreateDynamoDBTables, 'true']
+
+# ──────────────────────────────────────────────────────────────
+# Resources
+# ──────────────────────────────────────────────────────────────
+Resources:
+
+  # ============================================================
+  # DynamoDB Tables (only created when CreateDynamoDBTables=true)
+  # ============================================================
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Condition: ShouldCreateTables
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref UsersTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+
+  ProfilesTable:
+    Type: AWS::DynamoDB::Table
+    Condition: ShouldCreateTables
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref ProfilesTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+
+  # ============================================================
+  # IAM Roles
+  # ============================================================
+
+  # Role for the API Lambda (needs DynamoDB, Scheduler, Lambda invoke, Logs)
+  ApiLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PalapaApiAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DynamoDB
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${UsersTableName}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProfilesTableName}
+              - Sid: Scheduler
+                Effect: Allow
+                Action:
+                  - scheduler:CreateSchedule
+                  - scheduler:DeleteSchedule
+                  - scheduler:GetSchedule
+                  - scheduler:ListSchedules
+                Resource: '*'
+              - Sid: InvokeExecutors
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ExecutorFunction.Arn
+                  - !GetAtt DebugExecutorFunction.Arn
+              - Sid: ReadLogs
+                Effect: Allow
+                Action:
+                  - logs:DescribeLogStreams
+                  - logs:GetLogEvents
+                  - logs:DescribeLogGroups
+                Resource: '*'
+              - Sid: PassSchedulerRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt SchedulerInvokeRole.Arn
+
+  # Role for executor Lambdas (needs DynamoDB read for profile lookup)
+  ExecutorLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PalapaExecutorAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DynamoDBRead
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProfilesTableName}
+
+  # Role for EventBridge Scheduler to invoke the executor Lambdas
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeBookingLambdas
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ExecutorFunction.Arn
+                  - !GetAtt DebugExecutorFunction.Arn
+
+  # ============================================================
+  # Lambda Functions
+  # ============================================================
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: palapa-api
+      Description: Palapa Manager API handler
+      Code: ./build-api/
+      Handler: palapa_api.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt ApiLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Layers:
+        - !Ref RequestsLayerArn
+        - !Ref PytzLayerArn
+      Environment:
+        Variables:
+          PALAPA_USERS_TABLE: !Ref UsersTableName
+          PALAPA_PROFILES_TABLE: !Ref ProfilesTableName
+          PALAPA_TARGET_LAMBDA_ARN: !GetAtt ExecutorFunction.Arn
+          PALAPA_DEBUG_TARGET_LAMBDA_ARN: !GetAtt DebugExecutorFunction.Arn
+          PALAPA_INVOKE_ROLE_ARN: !GetAtt SchedulerInvokeRole.Arn
+          PALAPA_SCHEDULE_GROUP: !Ref ScheduleGroup
+
+  ExecutorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: palapa-executor
+      Description: Palapa booking executor (standard)
+      Code: ./build-executor/
+      Handler: palappa.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt ExecutorLambdaRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      Layers:
+        - !Ref AiohttpLayerArn
+        - !Ref PytzLayerArn
+
+  DebugExecutorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: palapa-executor-debug
+      Description: Palapa booking executor (debug)
+      Code: ./build-executor-debug/
+      Handler: palappa_debug.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt ExecutorLambdaRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      Layers:
+        - !Ref AiohttpLayerArn
+        - !Ref PytzLayerArn
+
+  # ============================================================
+  # API Gateway (HTTP API)
+  # ============================================================
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: PalapaManagerApi
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - '*'
+        MaxAge: 86400
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  JwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      AuthorizerType: JWT
+      IdentitySource: $request.header.Authorization
+      Name: GoogleOAuth
+      JwtConfiguration:
+        Audience:
+          - !Ref GoogleClientId
+        Issuer: https://accounts.google.com
+
+  LambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ApiFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # Permission for API Gateway to invoke the API Lambda
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  # --- Routes ---
+
+  # Catch-all route (requires JWT)
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: $default
+      Target: !Sub integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  # Auth-check route (no auth — this IS the auth check)
+  AuthCheckRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /auth-check
+      Target: !Sub integrations/${LambdaIntegration}
+      AuthorizationType: NONE
+
+# ──────────────────────────────────────────────────────────────
+# Outputs
+# ──────────────────────────────────────────────────────────────
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL (set this as REACT_APP_API_URL)
+    Value: !GetAtt HttpApi.ApiEndpoint
+
+  ApiFunctionArn:
+    Value: !GetAtt ApiFunction.Arn
+
+  ExecutorFunctionArn:
+    Value: !GetAtt ExecutorFunction.Arn
+
+  DebugExecutorFunctionArn:
+    Value: !GetAtt DebugExecutorFunction.Arn
+
+  SchedulerInvokeRoleArn:
+    Value: !GetAtt SchedulerInvokeRole.Arn
