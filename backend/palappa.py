@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import time
@@ -873,9 +874,74 @@ async def main(event, context):
             log_debug("lambda_exit_no_hut_succeeded", hut_choices=hut_choices)
             return
 
+        # Parse confirmation details
+        try:
+            confirm_data = json.loads(confirm_text)
+        except json.JSONDecodeError:
+            confirm_data = {}
+        order_number = confirm_data.get("order_number", "")
+
+        # Post-booking verification: re-fetch bookings and confirm status changed
+        verified = False
+        manage_url = ""
+        try:
+            _, verify_text, _ = await request_text(
+                session,
+                "post",
+                f"{BASE_URL}/api/palapa/booking/get-auto-update-bookings/1",
+                "verify-bookings",
+                json={"book_date": booking_date},
+            )
+            verify_bookings = json.loads(verify_text).get("bookings", [])
+            for vb in verify_bookings:
+                if vb.get("id") == selected_booking_id:
+                    vb_status = vb.get("status")
+                    verified = vb_status == 2
+                    print(
+                        f"VERIFICATION: Hut {selected_hut} booking {selected_booking_id} "
+                        f"status={vb_status} ({'CONFIRMED' if verified else 'NOT CONFIRMED'})"
+                    )
+
+                    # Build management link: base64(email|transaction_timestamp_utc)
+                    txn_at = vb.get("slot1_transaction_at") or ""
+                    booked_email = profile.get("email", "")
+                    if txn_at and booked_email:
+                        try:
+                            # slot1_transaction_at is UTC like "2026-04-20T21:59:27.616Z"
+                            txn_clean = txn_at.replace("Z", "+00:00")
+                            txn_dt = datetime.fromisoformat(txn_clean)
+                            txn_str = txn_dt.strftime("%Y-%m-%d %H:%M:%S")
+                            token = base64.b64encode(
+                                f"{booked_email}|{txn_str}".encode()
+                            ).decode().rstrip("=")
+                            manage_url = f"{BASE_URL}/api/auth/login-user-from-email/{token}"
+                            print(f"Management link: {manage_url}")
+                        except Exception as e:
+                            print(f"Could not build management link: {e}")
+
+                    log_debug(
+                        "booking_verified",
+                        hut=selected_hut,
+                        booking_id=selected_booking_id,
+                        status=vb_status,
+                        verified=verified,
+                        order_number=order_number,
+                        manage_url=manage_url,
+                        booking=summarize_booking(vb),
+                    )
+                    break
+            else:
+                print(f"VERIFICATION: Booking {selected_booking_id} not found in bookings list.")
+        except Exception as e:
+            print(f"Post-booking verification failed: {e}")
+            log_debug("verify_failed", error=str(e))
+
         end_time = datetime.utcnow()
         print("Book time:", (end_time - book_time).total_seconds())
         print("Total time:", (end_time - start_time).total_seconds())
+        if order_number:
+            print(f"Order number: {order_number}")
+        print(f"Booking confirmed: {verified}")
         print("Response:", confirm_text[:300])
         print("Cart Add Response:", cart_text[:300])
         log_debug(
@@ -883,6 +949,8 @@ async def main(event, context):
             booking_id=selected_booking_id,
             hut=selected_hut,
             hut_choices=hut_choices,
+            order_number=order_number,
+            verified=verified,
             book_time_seconds=(end_time - book_time).total_seconds(),
             total_time_seconds=(end_time - start_time).total_seconds(),
         )
