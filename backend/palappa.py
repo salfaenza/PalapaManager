@@ -392,6 +392,8 @@ def wait_until_prefire(booking_start):
 
 
 async def try_add_to_cart(session, booking_id):
+    """Send a single add-to-cart request. No concurrent shots — multiple in-flight
+    requests corrupt the server-side cart and cause book-from-cart to find it empty."""
     url = f"{BASE_URL}/api/cart/add-to-cart-palapa/{booking_id}"
     payload = {
         "slot": 1,
@@ -403,44 +405,37 @@ async def try_add_to_cart(session, booking_id):
         "discounts": {},
     }
 
-    result = None
-    shot_counter = 0
-    unavail_count = 0
-    EARLY_EXIT_THRESHOLD = 5
-    active_tasks = set()
-    fire_deadline = time.perf_counter() + (PREFIRE_MS + WINDOW_MS) / 1000.0
-
-    async def shoot(shot_id):
-        nonlocal result, unavail_count
-
+    MAX_CART_ATTEMPTS = 3
+    for attempt in range(MAX_CART_ATTEMPTS):
+        sent_at = datetime.utcnow()
+        attempt_perf = time.perf_counter()
         try:
-            fire_time = datetime.utcnow()
-            shot_perf = time.perf_counter()
             async with session.post(url, json=payload) as resp:
-                recv_time = datetime.utcnow()
                 text = await resp.text()
-                rtt_ms = (time.perf_counter() - shot_perf) * 1000
-                headers_date = resp.headers.get("Date")
+                received_at = datetime.utcnow()
+                rtt_ms = (time.perf_counter() - attempt_perf) * 1000
                 print(
-                    f"Shot {shot_id} SENT at {fire_time.isoformat()} - "
-                    f"RESPONSE {resp.status} at {recv_time.isoformat()} - "
-                    f"Date: {headers_date}"
+                    f"Add-to-cart attempt {attempt + 1} SENT at {sent_at.isoformat()} - "
+                    f"RESPONSE {resp.status} at {received_at.isoformat()} - "
+                    f"Date: {resp.headers.get('Date')}"
                 )
-                print(f"Shot {shot_id} response: {text[:300]}")
+                print(f"Add-to-cart attempt {attempt + 1} response: {text[:300]}")
+
                 parsed = {}
                 try:
                     parsed = json.loads(text)
                 except json.JSONDecodeError:
-                    parsed = {}
+                    pass
+
                 log_debug(
-                    "add_to_cart_shot",
-                    shot_id=shot_id,
+                    "add_to_cart_attempt",
+                    attempt=attempt + 1,
                     booking_id=booking_id,
                     status=resp.status,
                     rtt_ms=round(rtt_ms, 2),
-                    sent_at=fire_time.isoformat(),
-                    received_at=recv_time.isoformat(),
-                    response_date=headers_date,
+                    sent_at=sent_at.isoformat(),
+                    received_at=received_at.isoformat(),
+                    response_date=resp.headers.get("Date"),
                     success=parsed.get("success"),
                     message=parsed.get("message"),
                     booking=summarize_booking(parsed.get("booking") or {}),
@@ -448,130 +443,28 @@ async def try_add_to_cart(session, booking_id):
                     response_preview=response_preview(text),
                 )
 
-                if result is None and is_successful_response(text):
-                    unavail_count = 0
-                    result = {
-                        "shot_id": shot_id,
+                if is_successful_response(text):
+                    print(f"Add-to-cart succeeded on attempt {attempt + 1}.")
+                    return {
+                        "shot_id": attempt,
                         "status": resp.status,
                         "text": text,
-                        "sent_at": fire_time,
-                        "received_at": recv_time,
+                        "sent_at": sent_at,
+                        "received_at": received_at,
                     }
-                elif result is None:
-                    msg = str(parsed.get("message", "")).lower()
-                    if "not available" in msg or "already booked" in msg:
-                        unavail_count += 1
-        except asyncio.CancelledError:
-            raise
+
+                msg = str(parsed.get("message", "")).lower()
+                if "not available" in msg or "already booked" in msg:
+                    print(f"Booking {booking_id} is no longer available.")
+                    return None
+
         except Exception as e:
-            print(f"Shot {shot_id} failed: {e}")
+            print(f"Add-to-cart attempt {attempt + 1} failed: {e}")
+            log_debug("add_to_cart_exception", attempt=attempt + 1,
+                      booking_id=booking_id, error=str(e))
 
-    async def cart_contains_booking():
-        try:
-            status, text, _ = await request_text(
-                session,
-                "post",
-                f"{BASE_URL}/api/cart/user-cart",
-                "cart-verify",
-                json={},
-            )
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                print(f"Cart verification returned non-JSON response: {text[:300]}")
-                return None
-
-            log_debug(
-                "cart_verify_result",
-                booking_id=booking_id,
-                cart_booking_count=len(data.get("bookings", [])),
-                cart_booking_ids=[b.get("id") for b in data.get("bookings", [])],
-            )
-            for booking in data.get("bookings", []):
-                if booking.get("id") == booking_id:
-                    return {
-                        "shot_id": "cart-verify",
-                        "status": status,
-                        "text": text,
-                        "sent_at": datetime.utcnow(),
-                        "received_at": datetime.utcnow(),
-                    }
-            print(f"Cart verification found no booking {booking_id}.")
-            return None
-        except Exception as e:
-            print(f"Cart verification failed: {e}")
-            return None
-
-    while (
-        result is None
-        and unavail_count < EARLY_EXIT_THRESHOLD
-        and (
-            active_tasks
-            or (shot_counter < MAX_SHOTS and time.perf_counter() < fire_deadline)
-        )
-    ):
-        while (
-            result is None
-            and unavail_count < EARLY_EXIT_THRESHOLD
-            and len(active_tasks) < MAX_IN_FLIGHT
-            and shot_counter < MAX_SHOTS
-            and time.perf_counter() < fire_deadline
-        ):
-            task = asyncio.create_task(shoot(shot_counter))
-            active_tasks.add(task)
-            shot_counter += 1
-
-        if not active_tasks:
-            break
-
-        done, active_tasks = await asyncio.wait(
-            active_tasks,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        await asyncio.gather(*done, return_exceptions=True)
-
-    if unavail_count >= EARLY_EXIT_THRESHOLD and result is None:
-        for task in active_tasks:
-            task.cancel()
-        await asyncio.gather(*active_tasks, return_exceptions=True)
-        print(
-            f"Early exit: {unavail_count} consecutive 'not available' responses. "
-            f"Shots fired: {shot_counter}."
-        )
-        log_debug(
-            "add_to_cart_early_exit",
-            booking_id=booking_id,
-            unavail_count=unavail_count,
-            shots_started=shot_counter,
-        )
-        return None
-
-    if result is not None:
-        for task in active_tasks:
-            task.cancel()
-        await asyncio.gather(*active_tasks, return_exceptions=True)
-        print(
-            f"Got a successful add-to-cart shot "
-            f"{result['shot_id']} at {result['received_at'].isoformat()}!"
-        )
-        return result
-
-    if active_tasks:
-        await asyncio.gather(*active_tasks, return_exceptions=True)
-
-    verified_result = await cart_contains_booking()
-    if verified_result is not None:
-        print("Verified target booking is in cart after add-to-cart responses.")
-        return verified_result
-
-    print(f"All shots exhausted; no success. Shots started: {shot_counter}.")
-    log_debug(
-        "add_to_cart_exhausted",
-        booking_id=booking_id,
-        shots_started=shot_counter,
-        max_shots=MAX_SHOTS,
-        max_in_flight=MAX_IN_FLIGHT,
-    )
+    print(f"Add-to-cart exhausted after {MAX_CART_ATTEMPTS} attempts.")
+    log_debug("add_to_cart_exhausted", booking_id=booking_id, attempts=MAX_CART_ATTEMPTS)
     return None
 
 
