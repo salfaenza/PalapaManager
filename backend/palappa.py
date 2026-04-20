@@ -775,6 +775,7 @@ async def main(event, context):
         order_number = confirm_data.get("order_number", "")
 
         # Post-booking verification: re-fetch bookings and confirm status changed
+        # status=2 (registered user) or status=50 (anonymous/cart) both mean booked
         verified = False
         manage_url = ""
         try:
@@ -789,29 +790,11 @@ async def main(event, context):
             for vb in verify_bookings:
                 if vb.get("id") == selected_booking_id:
                     vb_status = vb.get("status")
-                    verified = vb_status == 2
+                    verified = vb_status in (2, 50)
                     print(
                         f"VERIFICATION: Hut {selected_hut} booking {selected_booking_id} "
                         f"status={vb_status} ({'CONFIRMED' if verified else 'NOT CONFIRMED'})"
                     )
-
-                    # Build management link: base64(email|transaction_timestamp_utc)
-                    txn_at = vb.get("slot1_transaction_at") or ""
-                    booked_email = profile.get("email", "")
-                    if txn_at and booked_email:
-                        try:
-                            # slot1_transaction_at is UTC like "2026-04-20T21:59:27.616Z"
-                            txn_clean = txn_at.replace("Z", "+00:00")
-                            txn_dt = datetime.fromisoformat(txn_clean)
-                            txn_str = txn_dt.strftime("%Y-%m-%d %H:%M:%S")
-                            token = base64.b64encode(
-                                f"{booked_email}|{txn_str}".encode()
-                            ).decode().rstrip("=")
-                            manage_url = f"{BASE_URL}/api/auth/login-user-from-email/{token}"
-                            print(f"Management link: {manage_url}")
-                        except Exception as e:
-                            print(f"Could not build management link: {e}")
-
                     log_debug(
                         "booking_verified",
                         hut=selected_hut,
@@ -819,7 +802,6 @@ async def main(event, context):
                         status=vb_status,
                         verified=verified,
                         order_number=order_number,
-                        manage_url=manage_url,
                         booking=summarize_booking(vb),
                     )
                     break
@@ -828,6 +810,26 @@ async def main(event, context):
         except Exception as e:
             print(f"Post-booking verification failed: {e}")
             log_debug("verify_failed", error=str(e))
+
+        # Build management link from the add-to-cart response (has slot1_transaction_at)
+        booked_email = profile.get("email", "")
+        if booked_email and cart_text:
+            try:
+                cart_data = json.loads(cart_text)
+                cart_booking = cart_data.get("booking") or {}
+                txn_at = cart_booking.get("slot1_transaction_at") or ""
+                if txn_at:
+                    txn_clean = txn_at.replace("Z", "+00:00")
+                    txn_dt = datetime.fromisoformat(txn_clean)
+                    txn_str = txn_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    token = base64.b64encode(
+                        f"{booked_email}|{txn_str}".encode()
+                    ).decode().rstrip("=")
+                    manage_url = f"{BASE_URL}/api/auth/login-user-from-email/{token}"
+                    print(f"Management link: {manage_url}")
+                    log_debug("management_link", manage_url=manage_url)
+            except Exception as e:
+                print(f"Could not build management link: {e}")
 
         end_time = datetime.utcnow()
         print("Book time:", (end_time - book_time).total_seconds())
