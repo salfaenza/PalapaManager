@@ -312,12 +312,6 @@ async def initialize_session():
 
     await request_text(session, "get", BASE_URL, "home")
     await request_text(session, "get", SEATING_URL, "seating-page")
-    await request_text(
-        session,
-        "get",
-        f"{BASE_URL}/api/translations/translations?language=en&return_as=dict",
-        "translations",
-    )
     await request_text(session, "get", f"{BASE_URL}/api/auth/sites-session", "sites-session")
     _, login_text, _ = await request_text(
         session,
@@ -695,60 +689,60 @@ async def main(event, context):
 
         session, csrf_token = await initialize_session()
 
-        try:
-            status, text, _ = await request_text(
-                session,
-                "post",
-                f"{BASE_URL}/api/palapa/get-palapas",
-                "get-palapas",
-                json={"seating_name": None},
-            )
-            palapas = json.loads(text).get("palapas", [])
-            log_debug("palapas_loaded", status=status, count=len(palapas))
-        except Exception as e:
-            print(f"Failed to get palapas: {e}")
-            log_debug("palapas_failed", error=str(e), traceback=traceback.format_exc())
-            return
+        # Resolve booking_date early; if the event has it (schedules always do),
+        # we can fetch palapas and bookings in parallel.
+        explicit_book_date = event.get("book_date")
 
-        # Use the first known palapa type to decide the booking_date, with event override.
-        primary_palapa = next(
-            (p for p in palapas if str(p.get("name")) == str(hut_choices[0])),
-            None,
-        )
-        palapatype_for_date = (primary_palapa or {}).get("palapatype_name", "")
-        booking_date = resolve_book_date(event, palapatype_for_date)
+        if explicit_book_date:
+            booking_date = str(explicit_book_date)
+            try:
+                (p_status, p_text, _), (b_status, b_text, _) = await asyncio.gather(
+                    request_text(session, "post", f"{BASE_URL}/api/palapa/get-palapas",
+                                 "get-palapas", json={"seating_name": None}),
+                    request_text(session, "post",
+                                 f"{BASE_URL}/api/palapa/booking/get-auto-update-bookings/1",
+                                 "get-auto-update-bookings", json={"book_date": booking_date}),
+                )
+                palapas = json.loads(p_text).get("palapas", [])
+                bookings = json.loads(b_text).get("bookings", [])
+                log_debug("parallel_fetch", palapas_count=len(palapas), bookings_count=len(bookings))
+            except Exception as e:
+                print(f"Failed to fetch palapas/bookings: {e}")
+                log_debug("parallel_fetch_failed", error=str(e), traceback=traceback.format_exc())
+                return
+        else:
+            # Fallback: sequential fetch (need palapas first to determine date)
+            try:
+                status, text, _ = await request_text(
+                    session, "post", f"{BASE_URL}/api/palapa/get-palapas",
+                    "get-palapas", json={"seating_name": None},
+                )
+                palapas = json.loads(text).get("palapas", [])
+            except Exception as e:
+                print(f"Failed to get palapas: {e}")
+                log_debug("palapas_failed", error=str(e), traceback=traceback.format_exc())
+                return
+
+            primary_palapa = next(
+                (p for p in palapas if str(p.get("name")) == str(hut_choices[0])), None,
+            )
+            palapatype_for_date = (primary_palapa or {}).get("palapatype_name", "")
+            booking_date = resolve_book_date(event, palapatype_for_date)
+
+            try:
+                status, text, _ = await request_text(
+                    session, "post",
+                    f"{BASE_URL}/api/palapa/booking/get-auto-update-bookings/1",
+                    "get-auto-update-bookings", json={"book_date": booking_date},
+                )
+                bookings = json.loads(text).get("bookings", [])
+            except Exception as e:
+                print(f"Failed to get bookings: {e}")
+                log_debug("bookings_failed", error=str(e), traceback=traceback.format_exc())
+                return
+
         print("Target booking_date:", booking_date)
-        log_debug(
-            "booking_date_resolved",
-            booking_date=booking_date,
-            palapatype=palapatype_for_date,
-            primary_hut=hut_choices[0],
-        )
-
-        try:
-            status, text, _ = await request_text(
-                session,
-                "post",
-                f"{BASE_URL}/api/palapa/booking/get-auto-update-bookings/1",
-                "get-auto-update-bookings",
-                json={"book_date": booking_date},
-            )
-            bookings = json.loads(text).get("bookings", [])
-            status_counts = {}
-            for item in bookings:
-                status_key = str(item.get("status"))
-                status_counts[status_key] = status_counts.get(status_key, 0) + 1
-            log_debug(
-                "bookings_loaded",
-                status=status,
-                booking_date=booking_date,
-                count=len(bookings),
-                status_counts=status_counts,
-            )
-        except Exception as e:
-            print(f"Failed to get bookings: {e}")
-            log_debug("bookings_failed", error=str(e), traceback=traceback.format_exc())
-            return
+        log_debug("booking_date_resolved", booking_date=booking_date, primary_hut=hut_choices[0])
 
         bookings_by_palapa = {b.get("palapa_id"): b for b in bookings}
 
@@ -772,39 +766,19 @@ async def main(event, context):
         booking_start = localized_dt.astimezone(pytz.utc)
         print("Booking opens at UTC:", booking_start.isoformat())
 
-        await request_text(session, "post", f"{BASE_URL}/api/cart/user-cart", "cart-before", json={})
         if not wait_until_prefire(booking_start):
             log_debug("lambda_exit_too_early", hut_choices=hut_choices)
             return
 
-        # Pre-flight re-check: fetch fresh booking statuses right before firing
-        try:
-            _, preflight_text, _ = await request_text(
-                session,
-                "post",
-                f"{BASE_URL}/api/palapa/booking/get-auto-update-bookings/1",
-                "preflight-bookings",
-                json={"book_date": booking_date},
-            )
-            fresh_bookings = json.loads(preflight_text).get("bookings", [])
-            bookings_by_palapa = {b.get("palapa_id"): b for b in fresh_bookings}
-            log_debug(
-                "preflight_bookings_refreshed",
-                booking_date=booking_date,
-                count=len(fresh_bookings),
-            )
-        except Exception as e:
-            print(f"Pre-flight refresh failed, using stale data: {e}")
-            log_debug("preflight_refresh_failed", error=str(e))
-
         book_time = datetime.utcnow()
         log_debug("booking_attempt_start", hut_choices=hut_choices, book_time_utc=book_time.isoformat())
 
-        # Iterate primary + backups in priority order, attempting reserve then add-to-cart.
-        reserve_result = None
-        cart_result = None
+        MAX_CONFIRM_RETRIES = 3
+        confirmed = False
         selected_hut = None
         selected_booking_id = None
+        confirm_text = ""
+        cart_text = ""
 
         for idx, hut in enumerate(hut_choices):
             palapa, booking = select_booking_for_hut(palapas, bookings_by_palapa, hut)
@@ -812,15 +786,9 @@ async def main(event, context):
                 print(f"Hut {hut} not found in palapa list; skipping.")
                 log_debug("hut_skipped", hut=hut, reason="palapa_not_found", priority=idx)
                 continue
-            if not booking_is_viable(booking):
-                print(f"Hut {hut} not viable (status={booking.get('status') if booking else 'n/a'}); skipping.")
-                log_debug(
-                    "hut_skipped",
-                    hut=hut,
-                    reason="not_viable",
-                    priority=idx,
-                    booking=summarize_booking(booking or {}),
-                )
+            if not booking:
+                print(f"Hut {hut} has no booking record; skipping.")
+                log_debug("hut_skipped", hut=hut, reason="no_booking_record", priority=idx)
                 continue
 
             booking_id = booking.get("id")
@@ -831,71 +799,90 @@ async def main(event, context):
                 booking=summarize_booking(booking),
                 booking_time=booking.get("advanced_booking_time"),
             )
-            reserve_attempt = await try_reserve_booking(session, booking_id, room_number=profile.get("room", ""))
-            if not reserve_attempt:
-                print(f"Could not reserve hut {hut}; trying next backup.")
-                log_debug("reserve_failed_trying_next", hut=hut, priority=idx)
-                continue
-            cart_attempt = await try_add_to_cart(session, booking_id)
-            if not cart_attempt:
-                print(f"Reserve succeeded but add-to-cart failed for hut {hut}; trying next backup.")
-                log_debug("cart_failed_trying_next", hut=hut, priority=idx)
-                continue
 
-            reserve_result = reserve_attempt
-            cart_result = cart_attempt
-            selected_hut = hut
-            selected_booking_id = booking_id
-            log_debug("hut_selected", hut=hut, priority=idx, booking_id=booking_id)
-            break
+            # Retry reserve → add-to-cart → book-from-cart if cart times out
+            for retry in range(MAX_CONFIRM_RETRIES):
+                reserve_attempt = await try_reserve_booking(session, booking_id, room_number=profile.get("room", ""))
+                if not reserve_attempt:
+                    print(f"Could not reserve hut {hut}; trying next backup.")
+                    log_debug("reserve_failed_trying_next", hut=hut, priority=idx, retry=retry)
+                    break
 
-        if not reserve_result or not cart_result:
-            print("Exhausted all hut choices without a successful reserve+cart.")
+                cart_attempt = await try_add_to_cart(session, booking_id)
+                if not cart_attempt:
+                    print(f"Add-to-cart failed for hut {hut}; trying next backup.")
+                    log_debug("cart_failed_trying_next", hut=hut, priority=idx, retry=retry)
+                    break
+
+                # Immediately confirm — minimize gap between add-to-cart and checkout
+                confirm_perf = time.perf_counter()
+                confirm_sent_at = datetime.utcnow()
+                status, c_text, confirm_headers = await request_text(
+                    session,
+                    "post",
+                    f"{BASE_URL}/api/cart/book-from-cart",
+                    "book-from-cart",
+                    headers={"X-CSRFToken": csrf_token or ""},
+                    json=payload_body,
+                )
+                confirm_rtt_ms = (time.perf_counter() - confirm_perf) * 1000
+                try:
+                    confirm_json = json.loads(c_text)
+                except json.JSONDecodeError:
+                    confirm_json = {}
+                log_debug(
+                    "book_from_cart_result",
+                    status=status,
+                    rtt_ms=round(confirm_rtt_ms, 2),
+                    sent_at=confirm_sent_at.isoformat(),
+                    received_at=datetime.utcnow().isoformat(),
+                    response_date=confirm_headers.get("Date"),
+                    success=confirm_json.get("success"),
+                    message=confirm_json.get("message"),
+                    booking_id=booking_id,
+                    hut=hut,
+                    retry=retry,
+                    response_preview=response_preview(c_text),
+                )
+
+                if confirm_json.get("success") == "ok":
+                    confirmed = True
+                    selected_hut = hut
+                    selected_booking_id = booking_id
+                    confirm_text = c_text
+                    cart_text = cart_attempt["text"]
+                    break
+
+                # Cart timeout — retry the full reserve→cart→confirm cycle
+                msg = str(confirm_json.get("message", "")).lower()
+                if "timeout" in msg or "nothing in your cart" in msg:
+                    print(f"Cart timed out for hut {hut} (retry {retry + 1}/{MAX_CONFIRM_RETRIES})")
+                    log_debug("cart_timeout_retry", hut=hut, retry=retry, message=msg)
+                    continue
+
+                # Some other confirm error — move to next hut
+                print(f"Confirm failed for hut {hut}: {confirm_json.get('message', 'unknown')}")
+                break
+
+            if confirmed:
+                log_debug("hut_selected", hut=hut, priority=idx, booking_id=booking_id)
+                break
+
+        if not confirmed:
+            print("Exhausted all hut choices without a successful booking.")
             log_debug("lambda_exit_no_hut_succeeded", hut_choices=hut_choices)
             return
-
-        confirm_perf = time.perf_counter()
-        confirm_sent_at = datetime.utcnow()
-        status, confirm_text, confirm_headers = await request_text(
-            session,
-            "post",
-            f"{BASE_URL}/api/cart/book-from-cart",
-            "book-from-cart",
-            headers={"X-CSRFToken": csrf_token or ""},
-            json=payload_body,
-        )
-        confirm_received_at = datetime.utcnow()
-        confirm_rtt_ms = (time.perf_counter() - confirm_perf) * 1000
-        try:
-            confirm_json = json.loads(confirm_text)
-        except json.JSONDecodeError:
-            confirm_json = {}
-        log_debug(
-            "book_from_cart_result",
-            status=status,
-            rtt_ms=round(confirm_rtt_ms, 2),
-            sent_at=confirm_sent_at.isoformat(),
-            received_at=confirm_received_at.isoformat(),
-            response_date=confirm_headers.get("Date"),
-            success=confirm_json.get("success"),
-            message=confirm_json.get("message"),
-            booking_id=selected_booking_id,
-            hut=selected_hut,
-            response_preview=response_preview(confirm_text),
-        )
 
         end_time = datetime.utcnow()
         print("Book time:", (end_time - book_time).total_seconds())
         print("Total time:", (end_time - start_time).total_seconds())
         print("Response:", confirm_text[:300])
-        print("Cart Add Response:", cart_result["text"][:300])
+        print("Cart Add Response:", cart_text[:300])
         log_debug(
             "lambda_complete",
             booking_id=selected_booking_id,
             hut=selected_hut,
             hut_choices=hut_choices,
-            reserve_attempt=reserve_result.get("attempt"),
-            add_to_cart_shot=cart_result.get("shot_id"),
             book_time_seconds=(end_time - book_time).total_seconds(),
             total_time_seconds=(end_time - start_time).total_seconds(),
         )

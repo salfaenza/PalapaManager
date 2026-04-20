@@ -47,6 +47,10 @@ SCHEDULE_GROUP = os.environ.get("PALAPA_SCHEDULE_GROUP", "default")
 DEFAULT_ADVANCE_BOOKING_TIME = "17:30"
 DEFAULT_SAME_DAY_BOOKING_TIME = "07:00"
 
+# Fire the executor Lambda this many seconds before the booking window opens,
+# giving it time to initialize the HTTP session before the window opens.
+LEAD_TIME_SECONDS = 15
+
 PROFILE_FIELDS = {"first", "last", "name", "room", "email", "phone"}
 
 
@@ -1028,7 +1032,8 @@ def build_schedule_name(last, hut, booking_time, booking_id):
 
 def schedule_one_time_job(schedule_name, payload, book_date, booking_time, palapatype, debug_mode=False):
     """Create a one-time EventBridge schedule using `at(...)` and Aruba tz."""
-    fire_local = compute_schedule_fire_time(book_date, booking_time, palapatype)
+    window_time = compute_schedule_fire_time(book_date, booking_time, palapatype)
+    fire_local = window_time - timedelta(seconds=LEAD_TIME_SECONDS)
     now_local = datetime.now(ARUBA_TZ)
     if fire_local <= now_local:
         # If we're already past the window, schedule 1 minute out so it fires right away.
