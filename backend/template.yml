@@ -283,7 +283,8 @@ Resources:
     Properties:
       ApiId: !Ref HttpApi
       AuthorizerType: JWT
-      IdentitySource: $request.header.Authorization
+      IdentitySource:
+        - $request.header.Authorization
       Name: GoogleOAuth
       JwtConfiguration:
         Audience:
