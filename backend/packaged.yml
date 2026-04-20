@@ -320,7 +320,9 @@ Resources:
       RouteKey: GET /auth-check
       Target:
         Fn::Sub: integrations/${LambdaIntegration}
-      AuthorizationType: NONE
+      AuthorizationType: JWT
+      AuthorizerId:
+        Ref: JwtAuthorizer
   GetRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:

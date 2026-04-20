@@ -312,14 +312,15 @@ Resources:
 
   # --- Routes ---
 
-  # Auth-check route (no auth — this IS the auth check)
+  # Auth-check route (JWT auth — API Gateway validates token and populates claims)
   AuthCheckRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref HttpApi
       RouteKey: GET /auth-check
       Target: !Sub integrations/${LambdaIntegration}
-      AuthorizationType: NONE
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
 
   # Method-specific catch-all routes (JWT auth).
   # OPTIONS is intentionally omitted so the API CORS config handles preflight automatically.
