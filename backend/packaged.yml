@@ -310,17 +310,6 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn:
         Fn::Sub: arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
-  DefaultRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId:
-        Ref: HttpApi
-      RouteKey: $default
-      Target:
-        Fn::Sub: integrations/${LambdaIntegration}
-      AuthorizationType: JWT
-      AuthorizerId:
-        Ref: JwtAuthorizer
   AuthCheckRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -330,6 +319,61 @@ Resources:
       Target:
         Fn::Sub: integrations/${LambdaIntegration}
       AuthorizationType: NONE
+  GetRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId:
+        Ref: HttpApi
+      RouteKey: GET /{proxy+}
+      Target:
+        Fn::Sub: integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId:
+        Ref: JwtAuthorizer
+  PostRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId:
+        Ref: HttpApi
+      RouteKey: POST /{proxy+}
+      Target:
+        Fn::Sub: integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId:
+        Ref: JwtAuthorizer
+  PutRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId:
+        Ref: HttpApi
+      RouteKey: PUT /{proxy+}
+      Target:
+        Fn::Sub: integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId:
+        Ref: JwtAuthorizer
+  PatchRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId:
+        Ref: HttpApi
+      RouteKey: PATCH /{proxy+}
+      Target:
+        Fn::Sub: integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId:
+        Ref: JwtAuthorizer
+  DeleteRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId:
+        Ref: HttpApi
+      RouteKey: DELETE /{proxy+}
+      Target:
+        Fn::Sub: integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId:
+        Ref: JwtAuthorizer
 Outputs:
   ApiUrl:
     Description: API Gateway endpoint URL (set this as REACT_APP_API_URL)

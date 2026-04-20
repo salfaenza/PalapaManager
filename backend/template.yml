@@ -268,6 +268,8 @@ Resources:
           - DELETE
           - OPTIONS
         AllowHeaders:
+          - Authorization
+          - Content-Type
           - '*'
         MaxAge: 86400
 
@@ -310,16 +312,6 @@ Resources:
 
   # --- Routes ---
 
-  # Catch-all route (requires JWT)
-  DefaultRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref HttpApi
-      RouteKey: $default
-      Target: !Sub integrations/${LambdaIntegration}
-      AuthorizationType: JWT
-      AuthorizerId: !Ref JwtAuthorizer
-
   # Auth-check route (no auth — this IS the auth check)
   AuthCheckRoute:
     Type: AWS::ApiGatewayV2::Route
@@ -328,6 +320,53 @@ Resources:
       RouteKey: GET /auth-check
       Target: !Sub integrations/${LambdaIntegration}
       AuthorizationType: NONE
+
+  # Method-specific catch-all routes (JWT auth).
+  # OPTIONS is intentionally omitted so the API CORS config handles preflight automatically.
+  GetRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /{proxy+}
+      Target: !Sub integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  PostRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /{proxy+}
+      Target: !Sub integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  PutRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: PUT /{proxy+}
+      Target: !Sub integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  PatchRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: PATCH /{proxy+}
+      Target: !Sub integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  DeleteRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: DELETE /{proxy+}
+      Target: !Sub integrations/${LambdaIntegration}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
 
 # ──────────────────────────────────────────────────────────────
 # Outputs
