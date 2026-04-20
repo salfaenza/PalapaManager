@@ -182,7 +182,7 @@ Resources:
       Description: Palapa Manager API handler
       Code:
         S3Bucket: palapa-deploy-artifacts-561031966991
-        S3Key: 8bd378154461de4b574d3b884e7a7344
+        S3Key: 235473ba0fa576bc9dfeb38381236dff
       Handler: palapa_api.lambda_handler
       Runtime: python3.11
       Role:

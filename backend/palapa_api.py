@@ -23,18 +23,18 @@ BASE_URL = "https://marriottarubasurfclub.ipoolside.com"
 SEATING_URL = f"{BASE_URL}/seating/next-day-reservation"
 TARGET_LAMBDA_ARN = os.environ.get(
     "PALAPA_TARGET_LAMBDA_ARN",
-    "arn:aws:lambda:us-east-1:561031966991:function:execute-palapa-booking",
+    "arn:aws:lambda:us-east-1:561031966991:function:palapa-executor",
 )
 DEBUG_TARGET_LAMBDA_ARN = os.environ.get(
     "PALAPA_DEBUG_TARGET_LAMBDA_ARN",
-    "arn:aws:lambda:us-east-1:561031966991:function:execute-palapa-booking-debug",
+    "arn:aws:lambda:us-east-1:561031966991:function:palapa-executor-debug",
 )
 INVOKE_ROLE_ARN = os.environ.get(
     "PALAPA_INVOKE_ROLE_ARN",
-    "arn:aws:iam::561031966991:role/InvokePalapaLambdaRole",
+    "arn:aws:iam::561031966991:role/palapa-backend-SchedulerInvokeRole-KZM8hLC4EWBV",
 )
-STANDARD_LOG_GROUP = "/aws/lambda/execute-palapa-booking"
-DEBUG_LOG_GROUP = "/aws/lambda/execute-palapa-booking-debug"
+STANDARD_LOG_GROUP = "/aws/lambda/palapa-executor"
+DEBUG_LOG_GROUP = "/aws/lambda/palapa-executor-debug"
 LOG_GROUPS = [
     {"log_group": STANDARD_LOG_GROUP, "function_mode": "standard"},
     {"log_group": DEBUG_LOG_GROUP, "function_mode": "debug"},
