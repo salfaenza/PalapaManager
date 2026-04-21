@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -57,20 +57,20 @@ export default function BookingResults({ token }) {
 
   return (
     <div className="card bookings-wrap">
-      <h2 className="bookings-title">Completed Bookings</h2>
+      <h2 className="bookings-title">Confirmed Bookings</h2>
 
-      {loading && <p className="text-muted" style={{ textAlign: 'center' }}>Loading booking results...</p>}
+      {loading && <p className="text-muted" style={{ textAlign: 'center' }}>Loading your bookings...</p>}
       {error && <div className="msg-error">{error}</div>}
 
       {!loading && results.length === 0 && !error && (
         <p className="text-muted" style={{ textAlign: 'center' }}>
-          No completed bookings yet. Bookings will appear here after they are confirmed on iPoolside.
+          No confirmed bookings yet. After the bot successfully books a hut, it will show up here.
         </p>
       )}
 
       {confirmed.length > 0 && (
         <div className="br-section">
-          <h3 className="section-heading">Active Bookings</h3>
+          <h3 className="section-heading">Confirmed</h3>
           <div className="bookings-list">
             {confirmed.map((r) => (
               <BookingResultCard
@@ -133,11 +133,11 @@ function BookingResultCard({ result, onCancel, cancelling }) {
         </span>
       </div>
       <div className="field-row-inline">
-        <span className="field-label">Profile</span>
+        <span className="field-label">Guest</span>
         <span className="field-value">{profileLabel}</span>
       </div>
       <div className="field-row-inline">
-        <span className="field-label">Order</span>
+        <span className="field-label">Confirmation #</span>
         <span className="field-value">{orderLabel}</span>
       </div>
       <div className="field-row-inline">
@@ -151,7 +151,7 @@ function BookingResultCard({ result, onCancel, cancelling }) {
       </div>
       {createdDate && (
         <div className="field-row-inline">
-          <span className="field-label">Booked</span>
+          <span className="field-label">Reserved</span>
           <span className="field-value text-muted">{createdDate}</span>
         </div>
       )}

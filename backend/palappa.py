@@ -417,15 +417,17 @@ async def initialize_session():
             "X-Requested-With": "XMLHttpRequest",
         }
     )
+    anonymous_id = login_data.get("anonymous_id")
     log_debug(
         "session_initialized",
         csrf_source="login-session" if login_data.get("csrf_token") else "cookie",
         csrf_present=bool(csrf),
         csrf_length=len(csrf or ""),
+        anonymous_id=anonymous_id,
         cookie_names=sorted({cookie.key for cookie in session.cookie_jar}),
         max_in_flight=MAX_IN_FLIGHT,
     )
-    return session, csrf
+    return session, csrf, anonymous_id
 
 
 def get_booking_date(palapa_type):
@@ -449,7 +451,7 @@ def wait_until_prefire(booking_start):
         window_ms=WINDOW_MS,
     )
 
-    if seconds_until > 60:
+    if seconds_until > 90:
         print(
             f"Too early. Booking opens in {seconds_until:.2f} seconds "
             "(to prefire point). Exiting."
@@ -457,7 +459,10 @@ def wait_until_prefire(booking_start):
         return False
 
     print(f"Entering final busy wait loop... (prefire {PREFIRE_MS} ms before)")
-    target_time = time.perf_counter() + seconds_until
+    # Sleep for the bulk to save CPU, then busy-wait for the final 2 seconds
+    if seconds_until > 2:
+        time.sleep(seconds_until - 2)
+    target_time = time.perf_counter() + min(seconds_until, 2)
     while time.perf_counter() < target_time:
         pass
     return True
@@ -540,7 +545,7 @@ async def try_add_to_cart(session, booking_id):
     return None
 
 
-async def try_reserve_booking(session, booking_id, room_number=""):
+async def try_reserve_booking(session, booking_id, room_number="", anonymous_id=None):
     url = f"{BASE_URL}/api/palapa/booking/reserve"
     params = {
         "booking_id": booking_id,
@@ -598,6 +603,22 @@ async def try_reserve_booking(session, booking_id, room_number=""):
                     response_preview=response_preview(text),
                 )
                 if data.get("success") == "ok" and booking.get("id") == booking_id:
+                    # Ownership check: if another session already owns this slot,
+                    # don't waste time on add-to-cart — it will fail.
+                    slot_owner = booking.get("slot1_booked_user_id")
+                    if slot_owner and anonymous_id and slot_owner != anonymous_id:
+                        print(
+                            f"Reserve returned ok but slot owned by {slot_owner[:8]}… "
+                            f"(ours: {anonymous_id[:8]}…); skipping."
+                        )
+                        log_debug(
+                            "reserve_owned_by_other",
+                            booking_id=booking_id,
+                            slot_owner=slot_owner,
+                            anonymous_id=anonymous_id,
+                            slot1_status=booking.get("slot1_status"),
+                        )
+                        return None
                     return {
                         "attempt": attempt,
                         "status": resp.status,
@@ -653,7 +674,7 @@ async def main(event, context):
             hut_choices=hut_choices,
         )
 
-        session, csrf_token = await initialize_session()
+        session, csrf_token, anonymous_id = await initialize_session()
 
         # Resolve booking_date early; if the event has it (schedules always do),
         # we can fetch palapas and bookings in parallel.
@@ -732,9 +753,30 @@ async def main(event, context):
         booking_start = localized_dt.astimezone(pytz.utc)
         print("Booking opens at UTC:", booking_start.isoformat())
 
+        await request_text(session, "post", f"{BASE_URL}/api/cart/user-cart", "cart-before", json={})
         if not wait_until_prefire(booking_start):
             log_debug("lambda_exit_too_early", hut_choices=hut_choices)
             return
+
+        # Pre-flight re-check: fetch fresh booking statuses right before firing
+        try:
+            _, preflight_text, _ = await request_text(
+                session,
+                "post",
+                f"{BASE_URL}/api/palapa/booking/get-auto-update-bookings/1",
+                "preflight-bookings",
+                json={"book_date": booking_date},
+            )
+            fresh_bookings = json.loads(preflight_text).get("bookings", [])
+            bookings_by_palapa = {b.get("palapa_id"): b for b in fresh_bookings}
+            log_debug(
+                "preflight_bookings_refreshed",
+                booking_date=booking_date,
+                count=len(fresh_bookings),
+            )
+        except Exception as e:
+            print(f"Pre-flight refresh failed, using stale data: {e}")
+            log_debug("preflight_refresh_failed", error=str(e))
 
         book_time = datetime.utcnow()
         log_debug("booking_attempt_start", hut_choices=hut_choices, book_time_utc=book_time.isoformat())
@@ -752,9 +794,15 @@ async def main(event, context):
                 print(f"Hut {hut} not found in palapa list; skipping.")
                 log_debug("hut_skipped", hut=hut, reason="palapa_not_found", priority=idx)
                 continue
-            if not booking:
-                print(f"Hut {hut} has no booking record; skipping.")
-                log_debug("hut_skipped", hut=hut, reason="no_booking_record", priority=idx)
+            if not booking_is_viable(booking):
+                print(f"Hut {hut} not viable (status={booking.get('status') if booking else 'n/a'}); skipping.")
+                log_debug(
+                    "hut_skipped",
+                    hut=hut,
+                    reason="not_viable",
+                    priority=idx,
+                    booking=summarize_booking(booking or {}),
+                )
                 continue
 
             booking_id = booking.get("id")
@@ -768,7 +816,7 @@ async def main(event, context):
 
             # Retry reserve → add-to-cart → book-from-cart if cart times out
             for retry in range(MAX_CONFIRM_RETRIES):
-                reserve_attempt = await try_reserve_booking(session, booking_id, room_number=profile.get("room", ""))
+                reserve_attempt = await try_reserve_booking(session, booking_id, room_number=profile.get("room", ""), anonymous_id=anonymous_id)
                 if not reserve_attempt:
                     print(f"Could not reserve hut {hut}; trying next backup.")
                     log_debug("reserve_failed_trying_next", hut=hut, priority=idx, retry=retry)

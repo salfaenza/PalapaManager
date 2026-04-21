@@ -28,8 +28,8 @@
   --clr-text-muted: #9a938c;
 
   --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-md: 8px;
+  --radius-lg: 8px;
   --radius-pill: 999px;
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
@@ -39,7 +39,7 @@
   --font-body: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 
-  --nav-height: 56px;
+  --nav-height: 60px;
 }
 
 *,
@@ -49,7 +49,7 @@
 }
 
 html {
-  font-size: 15px;
+  font-size: 16px;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -58,7 +58,7 @@ body {
   font-family: var(--font-body);
   background: var(--clr-bg);
   color: var(--clr-text);
-  line-height: 1.55;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

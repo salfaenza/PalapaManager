@@ -68,7 +68,7 @@ export default function PalapaMap({ palapas, hutChoices, onAddChoice, onRemoveCh
     setDetailPalapa(palapa);
     if (hutChoices.includes(name)) {
       onRemoveChoice?.(name);
-    } else if (palapa.available) {
+    } else {
       onAddChoice?.(name);
     }
   }, [hutChoices, onAddChoice, onRemoveChoice]);

@@ -52,7 +52,8 @@ DEFAULT_SAME_DAY_BOOKING_TIME = "07:00"
 
 # Fire the executor Lambda this many seconds before the booking window opens,
 # giving it time to initialize the HTTP session before the window opens.
-LEAD_TIME_SECONDS = 15
+# EventBridge delivery latency can be 20-30+ seconds, so 60s gives a safe margin.
+LEAD_TIME_SECONDS = 60
 
 PROFILE_FIELDS = {"first", "last", "name", "room", "email", "phone", "notification_phone", "sms_enabled"}
 
@@ -686,11 +687,14 @@ def handle_create_booking(event, email):
 
     locks = internal_locks_for_date(first_date)
     selected, unavailable = select_first_available_choice(palapas, locks, hut_choices)
+    availability_warnings = []
     if selected is None:
-        return cors_response(409, {
-            "error": "None of the selected huts are available for that date",
-            "unavailable": unavailable,
-        })
+        # Soft availability — proceed with metadata from first hut
+        meta = find_palapa_metadata(palapas, hut_choices)
+        if meta is None:
+            return cors_response(400, {"error": "None of the selected huts exist"})
+        selected = meta
+        availability_warnings = unavailable
 
     primary = hut_choices[0]
     booking_time = selected.get("booking_time", DEFAULT_ADVANCE_BOOKING_TIME)
@@ -754,7 +758,7 @@ def handle_create_booking(event, email):
             "errors": errors,
         })
 
-    return cors_response(200, {
+    resp = {
         "message": f"{len(created)} booking(s) scheduled",
         "booking_time": booking_time,
         "book_dates": [c["book_date"] for c in created],
@@ -762,7 +766,10 @@ def handle_create_booking(event, email):
         "debug_mode": debug_mode,
         "created": created,
         "errors": errors,
-    })
+    }
+    if availability_warnings:
+        resp["availability_warnings"] = availability_warnings
+    return cors_response(200, resp)
 
 
 def handle_update_booking(event, email, schedule_name):
@@ -828,11 +835,13 @@ def handle_update_booking(event, email, schedule_name):
     for hut in hut_choices_from_payload(current_payload):
         locks.pop(str(hut), None)
     selected, unavailable = select_first_available_choice(palapas, locks, hut_choices)
+    availability_warnings = []
     if selected is None:
-        return cors_response(409, {
-            "error": "None of the selected huts are available for that date",
-            "unavailable": unavailable,
-        })
+        meta = find_palapa_metadata(palapas, hut_choices)
+        if meta is None:
+            return cors_response(400, {"error": "None of the selected huts exist"})
+        selected = meta
+        availability_warnings = unavailable
     primary = hut_choices[0]
     booking_time = selected.get("booking_time", DEFAULT_ADVANCE_BOOKING_TIME)
     palapatype = selected.get("palapatype_name", "")
@@ -869,12 +878,15 @@ def handle_update_booking(event, email, schedule_name):
         print(f"Error rescheduling {schedule_name}:", str(e))
         return cors_response(500, {"error": str(e)})
 
-    return cors_response(200, {
+    resp = {
         "message": f"Booking {schedule_name} updated",
         "book_date": book_date,
         "hut_choices": hut_choices,
         "debug_mode": debug_mode,
-    })
+    }
+    if availability_warnings:
+        resp["availability_warnings"] = availability_warnings
+    return cors_response(200, resp)
 
 
 def handle_delete_booking(schedule_name):
@@ -1211,6 +1223,18 @@ def select_first_available_choice(palapas, locks, hut_choices):
             continue
         return palapa, unavailable
     return None, unavailable
+
+
+def find_palapa_metadata(palapas, hut_choices):
+    """Return the palapa dict for the first hut choice (for metadata like
+    booking_time), regardless of availability. Returns None only if the
+    hut doesn't exist at all."""
+    by_name = {str(p.get("name")): p for p in palapas}
+    for hut in hut_choices:
+        palapa = by_name.get(str(hut))
+        if palapa:
+            return palapa
+    return None
 
 
 def merge_profile_overrides(profile, data):

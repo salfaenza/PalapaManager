@@ -1,12 +1,24 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, Fragment } from 'react';
+
+function buildDateRange(start, end) {
+  if (!start) return [];
+  const dates = [];
+  let d = new Date(start + 'T12:00:00');
+  const stop = end ? new Date(end + 'T12:00:00') : d;
+  while (d <= stop) {
+    dates.push(d.toISOString().split('T')[0]);
+    d.setDate(d.getDate() + 1);
+  }
+  return dates;
+}
 
 export default function BookingsTable({ token, refreshTrigger }) {
   const [bookings, setBookings] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [deletingId, setDeletingId] = useState(null);
-  const [editingId, setEditingId] = useState(null);
+  const [togglingDate, setTogglingDate] = useState(null); // "groupKey:date" currently in flight
+  const [editingGroup, setEditingGroup] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [saving, setSaving] = useState(false);
   const [newHutInput, setNewHutInput] = useState('');
@@ -39,26 +51,131 @@ export default function BookingsTable({ token, refreshTrigger }) {
 
   useEffect(() => { fetchBookings(); fetchProfiles(); }, [fetchBookings, fetchProfiles, refreshTrigger]);
 
-  const handleDelete = async (scheduleName) => {
-    if (!window.confirm(`Delete schedule "${scheduleName}"?`)) return;
-    setDeletingId(scheduleName);
+  // Group bookings by hut choices (same huts in same order = same group)
+  const groupedBookings = useMemo(() => {
+    const groups = {};
+    bookings.forEach((b) => {
+      const choices = Array.isArray(b.hut_choices) && b.hut_choices.length
+        ? b.hut_choices.map(String)
+        : (b.hut_number ? [String(b.hut_number)] : []);
+      const key = choices.join(',');
+      if (!groups[key]) {
+        groups[key] = {
+          key,
+          hut_choices: choices,
+          booking_time: b.booking_time,
+          palapatype_name: b.palapatype_name,
+          debug_mode: b.debug_mode,
+          days: [],
+          daysByDate: {},
+        };
+      }
+      groups[key].days.push(b);
+      groups[key].daysByDate[b.book_date] = b;
+    });
+    Object.values(groups).forEach(g => {
+      g.days.sort((a, b) => (a.book_date || '').localeCompare(b.book_date || ''));
+    });
+    return Object.values(groups);
+  }, [bookings]);
+
+  // Build a set of profile IDs already used on each date
+  const usedProfilesByDate = useMemo(() => {
+    const map = {};
+    bookings.forEach((b) => {
+      if (b.book_date && b.profile_id) {
+        if (!map[b.book_date]) map[b.book_date] = {};
+        map[b.book_date][b.profile_id] = b.scheduleName;
+      }
+    });
+    return map;
+  }, [bookings]);
+
+  // Compute which dates to show for a group:
+  // Full range from min(checkIn, earliest scheduled) to max(checkOut, latest scheduled)
+  const getDatesForGroup = useCallback((group) => {
+    let checkIn = '';
+    let checkOut = '';
     try {
-      const res = await fetch(`${API}/bookings/${encodeURIComponent(scheduleName)}`, { method: 'DELETE', headers: authHeaders });
-      if (res.ok) fetchBookings();
-      else { const d = await res.json().catch(() => ({})); alert(d.error || 'Failed to delete schedule'); }
-    } catch { alert('Network error while deleting'); }
-    finally { setDeletingId(null); }
+      checkIn = localStorage.getItem('palapa-checkIn') || '';
+      checkOut = localStorage.getItem('palapa-checkOut') || '';
+    } catch {}
+
+    const scheduledDates = group.days.map(d => d.book_date).filter(Boolean).sort();
+    const firstScheduled = scheduledDates[0] || '';
+    const lastScheduled = scheduledDates[scheduledDates.length - 1] || '';
+
+    // Expand range to cover both trip dates and scheduled dates
+    const rangeStart = (checkIn && checkIn < firstScheduled) ? checkIn
+      : firstScheduled || checkIn;
+    const rangeEnd = (checkOut && checkOut > lastScheduled) ? checkOut
+      : lastScheduled || checkOut;
+
+    if (!rangeStart) return scheduledDates; // fallback
+    return buildDateRange(rangeStart, rangeEnd || rangeStart);
+  }, []);
+
+  // Toggle a date: if scheduled, delete it; if not, create it
+  const toggleDate = async (group, date) => {
+    const toggleKey = `${group.key}:${date}`;
+    if (togglingDate) return; // one at a time
+    setTogglingDate(toggleKey);
+    setError('');
+
+    const existing = group.daysByDate[date];
+    try {
+      if (existing) {
+        // Remove this day
+        const res = await fetch(`${API}/bookings/${encodeURIComponent(existing.scheduleName)}`, { method: 'DELETE', headers: authHeaders });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.error || 'Failed to remove day'); }
+      } else {
+        // Add this day
+        const res = await fetch(`${API}/bookings`, {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            book_dates: [date],
+            hut_choices: group.hut_choices,
+            debug_mode: group.debug_mode || false,
+          }),
+        });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.error || 'Failed to add day'); }
+      }
+      fetchBookings();
+    } catch { setError('Network error'); }
+    finally { setTogglingDate(null); }
   };
 
-  const startEdit = (b) => {
-    const choices = Array.isArray(b.hut_choices) && b.hut_choices.length ? b.hut_choices.map(String) : (b.hut_number ? [String(b.hut_number)] : []);
-    setEditingId(b.scheduleName);
-    setEditForm({ book_date: b.book_date || '', hut_choices: choices, debug_mode: Boolean(b.debug_mode) });
+  const handleDeleteGroup = async (group) => {
+    if (!window.confirm(`Delete all ${group.days.length} day(s) for hut ${group.hut_choices[0]}?`)) return;
+    for (const day of group.days) {
+      try {
+        await fetch(`${API}/bookings/${encodeURIComponent(day.scheduleName)}`, { method: 'DELETE', headers: authHeaders });
+      } catch {}
+    }
+    fetchBookings();
+  };
+
+  const changeProfile = async (scheduleName, newProfileId) => {
+    try {
+      const res = await fetch(`${API}/bookings/${encodeURIComponent(scheduleName)}`, {
+        method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_id: newProfileId })
+      });
+      if (res.ok) fetchBookings();
+      else { const d = await res.json().catch(() => ({})); setError(d.error || 'Failed to change profile'); }
+    } catch { setError('Network error while changing profile.'); }
+  };
+
+  // --- Group-level hut editing ---
+  const startEditGroup = (group) => {
+    setEditingGroup(group.key);
+    setEditForm({ hut_choices: [...group.hut_choices], debug_mode: group.debug_mode });
     setNewHutInput('');
     setError('');
   };
 
-  const cancelEdit = () => { setEditingId(null); setEditForm({}); setNewHutInput(''); setError(''); setSaving(false); };
+  const cancelEditGroup = () => { setEditingGroup(null); setEditForm({}); setNewHutInput(''); setError(''); setSaving(false); };
 
   const moveChoice = (hut, delta) => setEditForm((prev) => {
     const c = [...(prev.hut_choices || [])]; const i = c.indexOf(hut); if (i < 0) return prev;
@@ -74,166 +191,183 @@ export default function BookingsTable({ token, refreshTrigger }) {
     setNewHutInput('');
   };
 
-  const saveEdit = async () => {
+  const saveGroupEdit = async (group) => {
     if (saving) return;
     setSaving(true);
     try {
-      const res = await fetch(`${API}/bookings/${encodeURIComponent(editingId)}`, {
-        method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ book_date: editForm.book_date, hut_choices: editForm.hut_choices, debug_mode: Boolean(editForm.debug_mode) })
-      });
-      const data = await res.json();
-      if (res.ok) { cancelEdit(); fetchBookings(); }
-      else setError(data.error || 'Failed to update booking.');
-    } catch { setError('Network error while updating booking.'); }
+      for (const day of group.days) {
+        const res = await fetch(`${API}/bookings/${encodeURIComponent(day.scheduleName)}`, {
+          method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ book_date: day.book_date, hut_choices: editForm.hut_choices, debug_mode: Boolean(editForm.debug_mode) })
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          setError(d.error || `Failed to update booking for ${day.book_date}`);
+          setSaving(false);
+          return;
+        }
+      }
+      cancelEditGroup();
+      fetchBookings();
+    } catch { setError('Network error while updating bookings.'); }
     finally { setSaving(false); }
   };
 
-  // Change the profile assigned to a booking
-  const changeProfile = async (scheduleName, newProfileId) => {
-    try {
-      const res = await fetch(`${API}/bookings/${encodeURIComponent(scheduleName)}`, {
-        method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_id: newProfileId })
-      });
-      if (res.ok) fetchBookings();
-      else { const d = await res.json().catch(() => ({})); setError(d.error || 'Failed to change profile'); }
-    } catch { setError('Network error while changing profile.'); }
-  };
-
-  // Build a set of profile IDs already used on each date (for dropdown filtering)
-  const usedProfilesByDate = useMemo(() => {
-    const map = {};
-    bookings.forEach((b) => {
-      if (b.book_date && b.profile_id) {
-        if (!map[b.book_date]) map[b.book_date] = {};
-        map[b.book_date][b.profile_id] = b.scheduleName;
-      }
-    });
-    return map;
-  }, [bookings]);
-
   return (
     <div className="card bookings-wrap">
-      <h2 className="bookings-title">Scheduled Bookings</h2>
+      <h2 className="bookings-title">Upcoming Reservations</h2>
       {loading && <p className="text-muted" style={{ textAlign: 'center' }}>Loading bookings...</p>}
       {error && <div className="msg-error">{error}</div>}
 
-      {!loading && bookings.length === 0 && !error && (
-        <p className="text-muted" style={{ textAlign: 'center' }}>No scheduled bookings yet.</p>
+      {!loading && groupedBookings.length === 0 && !error && (
+        <p className="text-muted" style={{ textAlign: 'center' }}>No upcoming reservations yet. Schedule a booking above to get started.</p>
       )}
 
       <div className="bookings-list">
-        {bookings.map((b) => (
-          <div key={b.scheduleName || b.id} className="booking-card">
-            {editingId === b.scheduleName ? (
-              <div className="booking-edit">
-                <div className="field-group">
-                  <label className="label">Booking date</label>
-                  <input type="date" value={editForm.book_date || ''} onChange={(e) => setEditForm({ ...editForm, book_date: e.target.value })} className="input" />
-                </div>
+        {groupedBookings.map((group) => {
+          const allDates = getDatesForGroup(group);
+          const scheduledCount = group.days.length;
 
-                <div className="field-group">
-                  <label className="label">Priority list</label>
-                  <ul className="priority-list">
-                    {(editForm.hut_choices || []).map((h, idx) => (
-                      <li key={h} className="priority-item">
-                        <div className="priority-label">
-                          <span className="priority-rank">{idx + 1}</span>
-                          <strong>{h}</strong>
-                        </div>
-                        <span className="priority-actions">
-                          <button type="button" onClick={() => moveChoice(h, -1)} disabled={idx === 0} className="btn btn-ghost btn-sm">&#8593;</button>
-                          <button type="button" onClick={() => moveChoice(h, 1)} disabled={idx === (editForm.hut_choices || []).length - 1} className="btn btn-ghost btn-sm">&#8595;</button>
-                          <button type="button" onClick={() => removeChoice(h)} className="btn btn-danger btn-sm">&#10005;</button>
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="add-row" style={{ marginTop: '0.4rem' }}>
-                    <input value={newHutInput} onChange={(e) => setNewHutInput(e.target.value)} placeholder="Hut name to add" className="input" onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addChoice())} />
-                    <button type="button" onClick={addChoice} className="btn btn-primary btn-sm">Add</button>
-                  </div>
-                </div>
-
-                <label className="checkbox-row">
-                  <input type="checkbox" checked={Boolean(editForm.debug_mode)} onChange={(e) => setEditForm({ ...editForm, debug_mode: e.target.checked })} />
-                  <span>Use debug Lambda</span>
-                </label>
-
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
-                  <button onClick={saveEdit} className="btn btn-success btn-sm" disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                  <button onClick={cancelEdit} className="btn btn-ghost btn-sm">Cancel</button>
-                </div>
+          return (
+            <div key={group.key} className="booking-card">
+              {/* Hut choices header */}
+              <div className="field-row-inline">
+                <span className="field-label">Huts</span>
+                <span className="field-value">
+                  <HutChain choices={group.hut_choices} />
+                </span>
               </div>
-            ) : (
-              <>
+              {group.booking_time && (
                 <div className="field-row-inline">
-                  <span className="field-label">Name</span>
-                  <span className="field-value">{b.name || `${b.first || ''} ${b.last || ''}`.trim() || '\u2014'}</span>
+                  <span className="field-label">Books at</span>
+                  <span className="field-value">{group.booking_time}</span>
                 </div>
-                <div className="field-row-inline">
-                  <span className="field-label">Date</span>
-                  <span className="field-value">{b.book_date || '\u2014'}</span>
-                </div>
-                <div className="field-row-inline">
-                  <span className="field-label">Huts</span>
-                  <span className="field-value">
-                    <HutChain choices={b.hut_choices && b.hut_choices.length ? b.hut_choices : [b.hut_number].filter(Boolean)} />
-                  </span>
-                </div>
-                <div className="field-row-inline">
-                  <span className="field-label">Room</span>
-                  <span className="field-value">{b.room || '\u2014'}</span>
-                </div>
-                <div className="field-row-inline">
-                  <span className="field-label">Opens</span>
-                  <span className="field-value">{b.booking_time || '\u2014'}</span>
-                </div>
-                <div className="field-row-inline">
-                  <span className="field-label">Profile</span>
-                  <span className="field-value">
-                    <ProfileDropdown
-                      booking={b}
-                      profiles={profiles}
-                      usedOnDate={usedProfilesByDate[b.book_date] || {}}
-                      onChange={(profileId) => changeProfile(b.scheduleName, profileId)}
-                    />
-                  </span>
-                </div>
+              )}
+              {group.debug_mode && (
                 <div className="field-row-inline">
                   <span className="field-label">Mode</span>
-                  <span className={`badge ${b.debug_mode ? 'badge-warn' : 'badge-info'}`}>{b.debug_mode ? 'Debug' : 'Standard'}</span>
+                  <span className="badge badge-warn">Test</span>
                 </div>
+              )}
 
-                <div className="btn-row">
-                  <button onClick={() => startEdit(b)} className="btn btn-primary btn-sm">Edit</button>
-                  <button onClick={() => handleDelete(b.scheduleName)} className="btn btn-danger btn-sm" disabled={deletingId === b.scheduleName}>
-                    {deletingId === b.scheduleName ? 'Deleting...' : 'Delete'}
-                  </button>
+              {/* Edit hut choices */}
+              {editingGroup === group.key ? (
+                <div className="booking-edit" style={{ marginTop: '0.5rem' }}>
+                  <div className="field-group">
+                    <label className="label">Priority list (applies to all days)</label>
+                    <ul className="priority-list">
+                      {(editForm.hut_choices || []).map((h, idx) => (
+                        <li key={h} className="priority-item">
+                          <div className="priority-label">
+                            <span className="priority-rank">{idx + 1}</span>
+                            <strong>{h}</strong>
+                          </div>
+                          <span className="priority-actions">
+                            <button type="button" onClick={() => moveChoice(h, -1)} disabled={idx === 0} className="btn btn-ghost btn-sm">&#8593;</button>
+                            <button type="button" onClick={() => moveChoice(h, 1)} disabled={idx === (editForm.hut_choices || []).length - 1} className="btn btn-ghost btn-sm">&#8595;</button>
+                            <button type="button" onClick={() => removeChoice(h)} className="btn btn-danger btn-sm">&#10005;</button>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="add-row" style={{ marginTop: '0.4rem' }}>
+                      <input value={newHutInput} onChange={(e) => setNewHutInput(e.target.value)} placeholder="Hut name to add" className="input" onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addChoice())} />
+                      <button type="button" onClick={addChoice} className="btn btn-primary btn-sm">Add</button>
+                    </div>
+                  </div>
+
+                  <label className="checkbox-row">
+                    <input type="checkbox" checked={Boolean(editForm.debug_mode)} onChange={(e) => setEditForm({ ...editForm, debug_mode: e.target.checked })} />
+                    <span>Use debug Lambda</span>
+                  </label>
+
+                  <div style={{ display: 'flex', gap: '0.4rem' }}>
+                    <button onClick={() => saveGroupEdit(group)} className="btn btn-success btn-sm" disabled={saving}>{saving ? 'Saving...' : 'Save All'}</button>
+                    <button onClick={cancelEditGroup} className="btn btn-ghost btn-sm">Cancel</button>
+                  </div>
                 </div>
-              </>
-            )}
-          </div>
-        ))}
+              ) : null}
+
+              {/* Day pills — all trip dates, tap to select/deselect */}
+              <div className="booking-days" style={{ marginTop: '0.5rem' }}>
+                <span className="field-label">{scheduledCount} of {allDates.length} day{allDates.length !== 1 ? 's' : ''} booked</span>
+                <div className="booking-day-pills">
+                  {allDates.map((date) => {
+                    const scheduled = group.daysByDate[date];
+                    const isToggling = togglingDate === `${group.key}:${date}`;
+                    const dt = new Date(date + 'T12:00:00');
+                    const dayName = dt.toLocaleDateString('en-US', { weekday: 'short' });
+                    const monthDay = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    return (
+                      <button
+                        key={date}
+                        type="button"
+                        className={`date-pill ${scheduled ? 'date-pill--active' : 'date-pill--excluded'} ${isToggling ? 'date-pill--loading' : ''}`}
+                        onClick={() => toggleDate(group, date)}
+                        disabled={!!togglingDate}
+                      >
+                        <span className="date-pill-day">{dayName}</span>
+                        <span className="date-pill-date">{monthDay}</span>
+                        {isToggling && <span className="date-pill-badge">...</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-muted" style={{ marginTop: '0.25rem', fontSize: '0.78rem' }}>
+                  Tap a day to add or remove it.
+                </p>
+              </div>
+
+              {/* Per-day profile assignments for scheduled days */}
+              {scheduledCount > 0 && (
+                <div className="booking-profiles" style={{ marginTop: '0.4rem' }}>
+                  <span className="field-label">Guest per day</span>
+                  <div className="booking-profile-list">
+                    {group.days.map((day) => {
+                      const dt = new Date(day.book_date + 'T12:00:00');
+                      const label = dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                      return (
+                        <div key={day.scheduleName} className="booking-profile-row">
+                          <span className="booking-profile-date">{label}</span>
+                          <ProfileDropdown
+                            booking={day}
+                            profiles={profiles}
+                            usedOnDate={usedProfilesByDate[day.book_date] || {}}
+                            onChange={(profileId) => changeProfile(day.scheduleName, profileId)}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              {editingGroup !== group.key && (
+                <div className="btn-row">
+                  <button onClick={() => startEditGroup(group)} className="btn btn-primary btn-sm">Change Huts</button>
+                  <button onClick={() => handleDeleteGroup(group)} className="btn btn-danger btn-sm">Remove All</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
 function ProfileDropdown({ booking, profiles, usedOnDate, onChange }) {
-  // Show dropdown only if there are profiles to choose from
   if (!profiles.length) {
     return <span>{booking.name || booking.creator_email || '\u2014'}</span>;
   }
 
   const currentProfileId = booking.profile_id || '';
 
-  // Available options: current profile + any profile not used on this date by another booking
   const options = profiles.filter((p) => {
-    if (p.id === currentProfileId) return true; // always show current
+    if (p.id === currentProfileId) return true;
     const usedBy = usedOnDate[p.id];
-    return !usedBy || usedBy === booking.scheduleName; // not used, or used by this same booking
+    return !usedBy || usedBy === booking.scheduleName;
   });
 
   return (
@@ -257,10 +391,10 @@ function HutChain({ choices }) {
   return (
     <span className="hut-chain">
       {choices.map((h, idx) => (
-        <React.Fragment key={h}>
+        <Fragment key={h}>
           {idx > 0 && <span className="hut-arrow">{'\u2192'}</span>}
           <span className={`hut-tag ${idx === 0 ? 'hut-tag--primary' : 'hut-tag--backup'}`}>{h}</span>
-        </React.Fragment>
+        </Fragment>
       ))}
     </span>
   );

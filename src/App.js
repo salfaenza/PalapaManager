@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BrowserRouter as Router,
   Routes,
@@ -199,14 +199,14 @@ function BottomNav({ userRole, handleLogout }) {
         to="/"
         className={isActive('/') ? 'bottom-nav-link active' : 'bottom-nav-link'}
       >
-        Book
+        New Booking
       </Link>
 
       <Link
         to="/bookings"
         className={isActive('/bookings') ? 'bottom-nav-link active' : 'bottom-nav-link'}
       >
-        Bookings
+        Confirmed
       </Link>
 
       {userRole === 'admin' && (

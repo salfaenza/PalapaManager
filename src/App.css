@@ -427,9 +427,11 @@
   background: var(--clr-success-light);
 }
 .hut-pill--unavailable {
-  opacity: 0.45;
-  cursor: not-allowed;
+  opacity: 0.7;
   background: var(--clr-surface-alt);
+}
+.hut-pill--unavailable:not(:disabled) {
+  cursor: pointer;
 }
 .hut-pill--staff-hold {
   opacity: 0.7;
@@ -455,6 +457,21 @@
   padding: 0.05rem 0.45rem;
   font-weight: 800;
   font-size: 0.7rem;
+}
+.priority-warn-badge {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--clr-warn);
+  background: var(--clr-warn-light, #fff3cd);
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Priority list */
@@ -534,6 +551,33 @@
   font-size: 0.82rem;
   color: var(--clr-text-muted);
   margin-top: 0.25rem;
+}
+
+/* Expectations info card */
+.expectations-card {
+  background: var(--clr-bg-alt, #f8f9fa);
+  border: 1px solid var(--clr-border);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.82rem;
+}
+.expectations-card strong {
+  display: block;
+  margin-bottom: 0.3rem;
+}
+.expectations-card ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.expectations-card li {
+  margin-bottom: 0.25rem;
+}
+
+/* Warn text inline */
+.text-warn {
+  color: var(--clr-warn);
+  font-size: 0.75rem;
 }
 
 /* Hut section header with view toggle */
@@ -811,6 +855,38 @@
   display: flex;
   gap: 0.4rem;
   margin-top: 0.5rem;
+}
+
+/* Grouped booking day pills — reuses .date-pill from BookingForm */
+.booking-day-pills {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  margin-top: 0.35rem;
+}
+.date-pill--loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Per-day profile assignments */
+.booking-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.3rem;
+}
+.booking-profile-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.booking-profile-date {
+  font-weight: 600;
+  min-width: 90px;
+  font-size: 0.78rem;
+  color: var(--clr-text-muted);
 }
 
 /* Priority chain display */
@@ -1496,92 +1572,96 @@
 
 
 /* ============================================================
-   Onboarding Wizard
+   Wizard — Always-on 4-step booking flow
    ============================================================ */
 
-.ob-wrap {
+.wz-wrap {
   overflow: hidden;
 }
 
 /* Step indicator */
-.ob-steps {
+.wz-steps {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
   margin-bottom: 1.5rem;
   padding-bottom: 1.2rem;
   border-bottom: 1px solid var(--clr-border-light);
 }
 
-.ob-step {
+.wz-step {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.3rem;
   opacity: 0.35;
   transition: opacity 0.3s;
 }
-.ob-step--active {
+.wz-step--active {
   opacity: 1;
 }
-.ob-step--done {
+.wz-step--done {
   opacity: 0.7;
 }
+.wz-step--done:hover {
+  opacity: 0.9;
+}
 
-.ob-step-num {
+.wz-step-num {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: var(--clr-border);
   color: var(--clr-text-secondary);
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-weight: 800;
   transition: background 0.3s, color 0.3s;
 }
-.ob-step--active .ob-step-num {
+.wz-step--active .wz-step-num {
   background: var(--clr-primary);
   color: #fff;
 }
-.ob-step--done .ob-step-num {
+.wz-step--done .wz-step-num {
   background: var(--clr-success);
   color: #fff;
 }
 
-.ob-step-label {
-  font-size: 0.82rem;
+.wz-step-label {
+  font-size: 0.85rem;
   font-weight: 600;
   color: var(--clr-text-secondary);
 }
-.ob-step--active .ob-step-label {
+.wz-step--active .wz-step-label {
   color: var(--clr-text);
+  font-weight: 700;
 }
 
 /* Connectors between steps */
-.ob-step + .ob-step::before {
+.wz-step + .wz-step::before {
   content: '';
   display: block;
-  width: 28px;
+  width: 24px;
   height: 2px;
   background: var(--clr-border);
-  margin-right: 0.5rem;
+  margin-right: 0.4rem;
   border-radius: 1px;
 }
-.ob-step--done + .ob-step::before {
+.wz-step--done + .wz-step::before {
   background: var(--clr-success);
 }
 
 /* Panel */
-.ob-panel {
+.wz-panel {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-.ob-title {
-  font-size: 1.3rem;
+.wz-title {
+  font-size: 1.4rem;
   font-weight: 800;
   color: var(--clr-primary-dark);
   text-align: center;
@@ -1589,24 +1669,17 @@
   line-height: 1.3;
 }
 
-.ob-subtitle {
+.wz-subtitle {
   text-align: center;
   color: var(--clr-text-secondary);
-  font-size: 0.92rem;
-  line-height: 1.5;
+  font-size: 0.95rem;
+  line-height: 1.55;
   margin: 0 0 0.4rem;
-  max-width: 520px;
+  max-width: 540px;
   align-self: center;
 }
 
-.ob-card {
-  border: 1px solid var(--clr-border-light);
-  border-radius: var(--radius-md);
-  padding: 1rem 1.1rem;
-  background: var(--clr-surface-alt);
-}
-
-.ob-hint {
+.wz-hint {
   text-align: center;
   color: var(--clr-text-muted);
   font-size: 0.82rem;
@@ -1614,70 +1687,202 @@
   font-style: italic;
 }
 
-.ob-nav {
+.wz-summary-text {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--clr-text-secondary);
+  margin: 0.2rem 0 0;
+}
+
+.wz-nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  margin-top: 0.5rem;
+  margin-top: 0.75rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--clr-border-light);
 }
 
-/* Summary in step 3 */
-.ob-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
+/* Review summary card (Step 4) */
+.wz-review {
+  border: 1px solid var(--clr-border-light);
+  border-radius: var(--radius-md);
+  background: var(--clr-surface-alt);
+  overflow: hidden;
 }
-.ob-summary-row {
+.wz-review-row {
   display: flex;
-  gap: 0.5rem;
   align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s;
 }
-.ob-summary-label {
+.wz-review-row:not(:last-child) {
+  border-bottom: 1px solid var(--clr-border-light);
+}
+.wz-review-row:hover {
+  background: var(--clr-surface);
+}
+.wz-review-label {
   font-size: 0.78rem;
   font-weight: 700;
   color: var(--clr-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.03em;
   min-width: 55px;
+  flex-shrink: 0;
 }
-.ob-summary-value {
+.wz-review-value {
   font-weight: 600;
   color: var(--clr-text);
   font-size: 0.92rem;
+  flex: 1;
+  min-width: 0;
+}
+.wz-review-edit {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--clr-primary);
+  flex-shrink: 0;
 }
 
-/* Explainer */
-.ob-explain {
-  background: var(--clr-primary-light);
-  border-radius: var(--radius-md);
-  padding: 0.85rem 1rem;
+/* Main action button (full-width in step 4) */
+.wz-main-action {
+  width: 100%;
+  padding: 0.85rem 1.2rem;
+  font-size: 1.05rem;
 }
-.ob-explain h4 {
-  margin: 0 0 0.4rem;
-  font-size: 0.88rem;
-  font-weight: 700;
-  color: var(--clr-primary-dark);
+
+/* Secondary action (Book Now) */
+.wz-secondary-action {
+  width: 100%;
+  margin-top: 0.35rem;
 }
-.ob-explain ul {
-  margin: 0;
-  padding-left: 1.1rem;
+
+/* Advanced options toggle */
+.wz-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--clr-border-light);
+  border-radius: var(--radius-sm);
+  background: var(--clr-surface-alt);
 }
-.ob-explain li {
-  font-size: 0.85rem;
-  color: var(--clr-text-secondary);
-  line-height: 1.6;
+.wz-advanced-toggle {
+  align-self: center;
+  margin-top: 0.25rem;
+  color: var(--clr-text-muted);
+}
+
+/* Larger button variant */
+.btn-lg {
+  padding: 0.75rem 1.3rem;
+  font-size: 1rem;
+  min-height: 48px;
+}
+
+/* Larger input variant */
+.input-lg {
+  padding: 0.65rem 0.75rem;
+  font-size: 1rem;
+  min-height: 48px;
 }
 
 /* Fade-in animation */
-@keyframes ob-fade-in {
+@keyframes wz-fade-in {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.ob-fade-in {
-  animation: ob-fade-in 0.35s ease-out;
+.wz-fade-in {
+  animation: wz-fade-in 0.3s ease-out;
+}
+
+
+/* ============================================================
+   Date Quick Picks & Day Pills
+   ============================================================ */
+
+.date-quick-picks {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.date-pills-wrap {
+  margin-top: 0.5rem;
+}
+
+.date-pills {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.date-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.05rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--clr-success);
+  background: var(--clr-success-light);
+  cursor: pointer;
+  font-family: var(--font-body);
+  transition: all 0.15s;
+  position: relative;
+  min-width: 52px;
+}
+.date-pill:hover {
+  transform: translateY(-1px);
+}
+
+.date-pill--active {
+  border-color: var(--clr-success);
+  background: var(--clr-success-light);
+}
+
+.date-pill--excluded {
+  border-color: var(--clr-border);
+  background: var(--clr-surface);
+  opacity: 0.55;
+  cursor: pointer;
+}
+.date-pill--excluded .date-pill-date {
+  text-decoration: line-through;
+}
+.date-pill--excluded:hover {
+  opacity: 0.8;
+  border-color: var(--clr-primary);
+}
+
+.date-pill--scheduled:not(.date-pill--excluded) {
+  border-color: var(--clr-warn);
+}
+
+.date-pill-day {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--clr-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.date-pill-date {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--clr-text);
+}
+
+.date-pill-badge {
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: var(--clr-warn);
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
 }
 
 
@@ -1707,7 +1912,9 @@
   .map-detail-info { grid-template-columns: 1fr; }
   .filter-bar { gap: 0.25rem; }
   .filter-pill { padding: 0.18rem 0.45rem; font-size: 0.72rem; }
-  .ob-steps { gap: 0.3rem; }
-  .ob-step-label { display: none; }
-  .ob-step + .ob-step::before { width: 20px; }
+  .wz-steps { gap: 0.25rem; }
+  .wz-step-label { display: none; }
+  .wz-step + .wz-step::before { width: 16px; }
+  .wz-title { font-size: 1.2rem; }
+  .btn-lg { padding: 0.7rem 1rem; font-size: 0.95rem; }
 }
