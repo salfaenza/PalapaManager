@@ -1080,10 +1080,22 @@ def handle_cancel_booking_result(result_id, email, role):
             "X-Requested-With": "XMLHttpRequest",
         })
 
-        # Cancel the booking
+        # Cancel the booking — try POST with JSON body first, fall back to DELETE
         cancel_url = f"{BASE_URL}/api/palapa/booking/cancel-booking/{ipoolside_booking_id}"
-        cancel_resp = s.post(cancel_url, timeout=15)
-        print(f"iPoolside cancel response: {cancel_resp.status_code} {cancel_resp.text[:300]}")
+        print(f"iPoolside cancel URL: {cancel_url}")
+        print(f"iPoolside CSRF token: {csrf_token[:20] if csrf_token else 'None'}...")
+        cancel_resp = s.post(cancel_url, json={}, timeout=15)
+        print(f"iPoolside cancel POST response: {cancel_resp.status_code} {cancel_resp.text[:500]}")
+
+        if cancel_resp.status_code in (405, 500):
+            # POST failed, try DELETE
+            cancel_resp = s.delete(cancel_url, timeout=15)
+            print(f"iPoolside cancel DELETE response: {cancel_resp.status_code} {cancel_resp.text[:500]}")
+
+        if cancel_resp.status_code in (405, 500):
+            # DELETE failed, try GET
+            cancel_resp = s.get(cancel_url, timeout=15)
+            print(f"iPoolside cancel GET response: {cancel_resp.status_code} {cancel_resp.text[:500]}")
 
         try:
             cancel_data = cancel_resp.json()
