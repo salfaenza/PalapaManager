@@ -1082,7 +1082,7 @@ def handle_cancel_booking_result(result_id, email, role):
 
         # Cancel the booking
         cancel_url = f"{BASE_URL}/api/palapa/booking/cancel-booking/{ipoolside_booking_id}"
-        cancel_resp = s.get(cancel_url, timeout=15)
+        cancel_resp = s.post(cancel_url, timeout=15)
         print(f"iPoolside cancel response: {cancel_resp.status_code} {cancel_resp.text[:300]}")
 
         try:
