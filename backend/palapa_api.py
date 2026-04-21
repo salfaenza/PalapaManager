@@ -1057,45 +1057,56 @@ def handle_cancel_booking_result(result_id, email, role):
 
     token = base64.b64encode(f"{profile_email}|{txn_str}".encode()).decode().rstrip("=")
 
-    # Authenticate with iPoolside and cancel the booking
+    # Authenticate with iPoolside and cancel the booking.
+    # Must mirror the browser session setup exactly (login → home page → sites-session
+    # → login-session → booking-values → user-cart → cancel) with the correct headers.
     try:
         s = requests.Session()
-        # Login to get session cookies
+
+        # Step 1: Login via email link (sets sessionid + csrftoken cookies)
         login_url = f"{BASE_URL}/api/auth/login-user-from-email/{token}"
         login_resp = s.get(login_url, timeout=15, allow_redirects=False)
         print(f"iPoolside login response: {login_resp.status_code}")
 
-        # Establish session
+        # Step 2: Load home page (follows redirect target, establishes full session)
+        s.get(BASE_URL, timeout=15)
+
+        # Step 3: sites-session (refreshes csrftoken cookie)
         s.get(f"{BASE_URL}/api/auth/sites-session", timeout=10)
+
+        # Step 4: login-session (gets csrf_token + user info)
         login_session_resp = s.get(f"{BASE_URL}/api/auth/login-session", timeout=10)
         try:
-            csrf_token = login_session_resp.json().get("csrf_token")
+            login_data = login_session_resp.json()
+            csrf_token = login_data.get("csrf_token")
         except Exception:
+            login_data = {}
             csrf_token = None
         csrf_token = csrf_token or s.cookies.get("csrftoken")
+        print(f"iPoolside CSRF token: {csrf_token[:20] if csrf_token else 'None'}...")
+        print(f"iPoolside session cookies: {list(s.cookies.keys())}")
 
+        # Set headers to match the browser's REST client exactly
         s.headers.update({
             "Accept": "*/*",
+            "Content-Type": "text/plain;charset=UTF-8",
+            "Origin": BASE_URL,
+            "Referer": f"{BASE_URL}/",
             "X-CSRFToken": csrf_token or "",
             "X-Requested-With": "XMLHttpRequest",
         })
 
-        # Cancel the booking — try POST with JSON body first, fall back to DELETE
+        # Step 5: get-booking-values (mirrors browser flow)
+        s.get(f"{BASE_URL}/api/palapa/booking/get-booking-values/1", timeout=10)
+
+        # Step 6: user-cart (mirrors browser flow)
+        s.post(f"{BASE_URL}/api/cart/user-cart", data="{}", timeout=10)
+
+        # Step 7: Cancel the booking
         cancel_url = f"{BASE_URL}/api/palapa/booking/cancel-booking/{ipoolside_booking_id}"
         print(f"iPoolside cancel URL: {cancel_url}")
-        print(f"iPoolside CSRF token: {csrf_token[:20] if csrf_token else 'None'}...")
-        cancel_resp = s.post(cancel_url, json={}, timeout=15)
-        print(f"iPoolside cancel POST response: {cancel_resp.status_code} {cancel_resp.text[:500]}")
-
-        if cancel_resp.status_code in (405, 500):
-            # POST failed, try DELETE
-            cancel_resp = s.delete(cancel_url, timeout=15)
-            print(f"iPoolside cancel DELETE response: {cancel_resp.status_code} {cancel_resp.text[:500]}")
-
-        if cancel_resp.status_code in (405, 500):
-            # DELETE failed, try GET
-            cancel_resp = s.get(cancel_url, timeout=15)
-            print(f"iPoolside cancel GET response: {cancel_resp.status_code} {cancel_resp.text[:500]}")
+        cancel_resp = s.post(cancel_url, data="{}", timeout=15)
+        print(f"iPoolside cancel response: {cancel_resp.status_code} {cancel_resp.text[:500]}")
 
         try:
             cancel_data = cancel_resp.json()
