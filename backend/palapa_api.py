@@ -54,7 +54,7 @@ DEFAULT_SAME_DAY_BOOKING_TIME = "07:00"
 # giving it time to initialize the HTTP session before the window opens.
 LEAD_TIME_SECONDS = 15
 
-PROFILE_FIELDS = {"first", "last", "name", "room", "email", "phone", "notification_phone"}
+PROFILE_FIELDS = {"first", "last", "name", "room", "email", "phone", "notification_phone", "sms_enabled"}
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +218,9 @@ def handle_patch_profile(event, email):
     for key, value in body.items():
         if key not in PROFILE_FIELDS:
             continue
-        if isinstance(value, str):
+        if isinstance(value, bool):
+            updates[key] = value
+        elif isinstance(value, str):
             updates[key] = value.strip()
         elif value is None:
             updates[key] = ""
@@ -253,7 +255,7 @@ def get_profile_item(email):
 
 
 def empty_profile(email):
-    return {"email": email, "first": "", "last": "", "name": "", "room": "", "phone": "", "notification_phone": ""}
+    return {"email": email, "first": "", "last": "", "name": "", "room": "", "phone": "", "notification_phone": "", "sms_enabled": False}
 
 
 def upsert_profile_fields(email, updates):
@@ -341,6 +343,10 @@ def handle_create_profile(event, owner_email):
     name = f"{first} {last}".strip()
     profile_id = profile_email  # use email as the ID (it's the DynamoDB key)
 
+    sms_enabled = body.get("sms_enabled")
+    if not isinstance(sms_enabled, bool):
+        sms_enabled = False
+
     item = {
         "email": profile_email,
         "id": profile_id,
@@ -350,6 +356,8 @@ def handle_create_profile(event, owner_email):
         "name": name,
         "room": (body.get("room") or "").strip(),
         "phone": (body.get("phone") or "").strip(),
+        "notification_phone": (body.get("notification_phone") or "").strip(),
+        "sms_enabled": sms_enabled,
         "created_at": datetime.utcnow().isoformat(),
     }
     profiles_table.put_item(Item=item)
@@ -371,9 +379,11 @@ def handle_update_profile(event, owner_email, profile_id):
         return cors_response(403, {"error": "Not your profile"})
 
     updates = {}
-    for key in ("first", "last", "room", "phone"):
+    for key in ("first", "last", "room", "phone", "notification_phone"):
         if key in body and isinstance(body[key], str):
             updates[key] = body[key].strip()
+    if "sms_enabled" in body and isinstance(body["sms_enabled"], bool):
+        updates["sms_enabled"] = body["sms_enabled"]
 
     # Handle email change with uniqueness check
     new_email = (body.get("email") or "").strip().lower()

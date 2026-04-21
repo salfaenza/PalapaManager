@@ -60,7 +60,7 @@ export default function BookingForm({ triggerRefresh, token }) {
   const [profilesLoading, setProfilesLoading] = useState(true);
   const [profileError, setProfileError] = useState('');
   const [editingProfile, setEditingProfile] = useState(null); // null | 'new' | profile id
-  const [profileForm, setProfileForm] = useState({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '' });
+  const [profileForm, setProfileForm] = useState({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '', sms_enabled: false });
   const [profileSaving, setProfileSaving] = useState(false);
 
   const [palapas, setPalapas] = useState([]);
@@ -132,7 +132,7 @@ export default function BookingForm({ triggerRefresh, token }) {
     if (!profilesLoading && profiles.length === 0 && !onboardingDismissed) {
       setOnboardingStep(1);
       setEditingProfile('new');
-      setProfileForm({ first: '', last: '', email: '', phone: '', room: '' });
+      setProfileForm({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '', sms_enabled: false });
       setProfileError('');
     }
   }, [profilesLoading, profiles.length, onboardingDismissed]);
@@ -140,19 +140,19 @@ export default function BookingForm({ triggerRefresh, token }) {
   // --- Profile CRUD ---
   const startAddProfile = () => {
     setEditingProfile('new');
-    setProfileForm({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '' });
+    setProfileForm({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '', sms_enabled: false });
     setProfileError('');
   };
 
   const startEditProfile = (p) => {
     setEditingProfile(p.id);
-    setProfileForm({ first: p.first || '', last: p.last || '', email: p.email || '', phone: p.phone || '', room: p.room || '', notification_phone: p.notification_phone || '' });
+    setProfileForm({ first: p.first || '', last: p.last || '', email: p.email || '', phone: p.phone || '', room: p.room || '', notification_phone: p.notification_phone || '', sms_enabled: !!p.sms_enabled });
     setProfileError('');
   };
 
   const cancelEditProfile = () => {
     setEditingProfile(null);
-    setProfileForm({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '' });
+    setProfileForm({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '', sms_enabled: false });
     setProfileError('');
   };
 
@@ -822,10 +822,16 @@ function ProfileFormInline({ form, onChange, onSave, onCancel, saving, error, is
           <input type="text" value={form.phone} onChange={(e) => onChange({ ...form, phone: e.target.value })} className="input" placeholder="555-123-4567" />
         </div>
       </div>
-      <div className="field-group">
-        <label className="label">SMS notifications (your cell)</label>
-        <input type="tel" value={form.notification_phone || ''} onChange={(e) => onChange({ ...form, notification_phone: e.target.value })} className="input" placeholder="+1234567890" />
-      </div>
+      <label className="checkbox-row" style={{ marginTop: '0.35rem' }}>
+        <input type="checkbox" checked={!!form.sms_enabled} onChange={(e) => onChange({ ...form, sms_enabled: e.target.checked })} />
+        <span>Enable SMS notifications</span>
+      </label>
+      {form.sms_enabled && (
+        <div className="field-group">
+          <label className="label">SMS phone number</label>
+          <input type="tel" value={form.notification_phone || ''} onChange={(e) => onChange({ ...form, notification_phone: e.target.value })} className="input" placeholder="+1234567890" />
+        </div>
+      )}
       {error && <div className="msg-error">{error}</div>}
       <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem' }}>
         <button type="button" onClick={onSave} className="btn btn-success" disabled={saving}>{saving ? 'Saving...' : isNew ? 'Save Profile' : 'Save'}</button>

@@ -130,6 +130,10 @@ def resolve_profile(event):
     first = prefer("first")
     last = prefer("last")
     name = prefer("name") or f"{first} {last}".strip()
+    sms_enabled = stored.get("sms_enabled")
+    if sms_enabled is None:
+        sms_enabled = event.get("sms_enabled", False)
+
     return {
         "first": first,
         "last": last,
@@ -138,6 +142,7 @@ def resolve_profile(event):
         "phone": prefer("phone"),
         "room": prefer("room"),
         "notification_phone": prefer("notification_phone"),
+        "sms_enabled": bool(sms_enabled),
     }
 
 
@@ -832,12 +837,13 @@ async def main(event, context):
         if not confirmed:
             print("Exhausted all hut choices without a successful booking.")
             log_debug("lambda_exit_no_hut_succeeded", hut_choices=hut_choices)
-            notify_phone = profile.get("notification_phone", "")
-            await send_sms_notification(
-                f"Palapa booking FAILED for {booking_date}. "
-                f"All {len(hut_choices)} hut(s) were taken: {', '.join(hut_choices)}",
-                notify_phone,
-            )
+            if profile.get("sms_enabled"):
+                notify_phone = profile.get("notification_phone", "")
+                await send_sms_notification(
+                    f"Palapa booking FAILED for {booking_date}. "
+                    f"All {len(hut_choices)} hut(s) were taken: {', '.join(hut_choices)}",
+                    notify_phone,
+                )
             return
 
         # Parse confirmation details
@@ -916,15 +922,16 @@ async def main(event, context):
         )
 
         # SMS notification on success
-        notify_phone = profile.get("notification_phone", "")
-        sms_body = f"Palapa booked! Hut {selected_hut} for {booking_date}."
-        if order_number:
-            sms_body += f" Order: {order_number}"
-        if not verified:
-            sms_body += " (unverified — check iPoolside)"
-        if manage_url:
-            sms_body += f"\nManage: {manage_url}"
-        await send_sms_notification(sms_body, notify_phone)
+        if profile.get("sms_enabled"):
+            notify_phone = profile.get("notification_phone", "")
+            sms_body = f"Palapa booked! Hut {selected_hut} for {booking_date}."
+            if order_number:
+                sms_body += f" Order: {order_number}"
+            if not verified:
+                sms_body += " (unverified — check iPoolside)"
+            if manage_url:
+                sms_body += f"\nManage: {manage_url}"
+            await send_sms_notification(sms_body, notify_phone)
 
         end_time = datetime.utcnow()
         print("Book time:", (end_time - book_time).total_seconds())
