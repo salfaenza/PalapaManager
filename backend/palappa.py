@@ -12,8 +12,11 @@ import pytz
 
 
 # Tuning parameters
+# PREFIRE_MS: start firing reserve requests this many ms BEFORE the window opens.
+# Pre-window responses (slot1_status=1, no owner) are rejected and the loop
+# keeps firing, so one request lands within ~30-80ms of the actual open.
 PREFIRE_MS = 500
-WINDOW_MS = 400
+WINDOW_MS = 1000
 MAX_SHOTS = 200
 MAX_IN_FLIGHT = 25
 
@@ -546,6 +549,16 @@ async def try_add_to_cart(session, booking_id):
 
 
 async def try_reserve_booking(session, booking_id, room_number="", anonymous_id=None):
+    """Fire concurrent reserve requests in staggered waves.
+
+    Reserve is idempotent — the server returns the current slot state regardless
+    of how many times we call it.  By keeping multiple requests in-flight we
+    ensure one arrives at the server within ~STAGGER_MS of the booking window
+    opening, rather than waiting a full round-trip between each attempt.
+
+    Pre-window responses (slot1_status=1, no owner) are discarded so the burst
+    continues until the window actually opens or the deadline expires.
+    """
     url = f"{BASE_URL}/api/palapa/booking/reserve"
     params = {
         "booking_id": booking_id,
@@ -555,45 +568,47 @@ async def try_reserve_booking(session, booking_id, room_number="", anonymous_id=
         "reservation_no": "",
         "room_number": room_number or "",
     }
-    deadline = time.perf_counter() + (PREFIRE_MS + WINDOW_MS) / 1000.0
-    attempt = 0
 
-    while time.perf_counter() < deadline:
-        attempt += 1
+    RESERVE_IN_FLIGHT = 5       # concurrent requests at any moment
+    STAGGER_MS = 15             # ms between launching each request
+    deadline = time.perf_counter() + (PREFIRE_MS + WINDOW_MS) / 1000.0
+
+    result = None               # first successful reserve response
+    owned_by_other = False      # flag: slot taken by someone else
+    attempt_counter = 0
+    active_tasks = set()
+
+    async def _fire(shot_id):
+        nonlocal result, owned_by_other
+
         sent_at = datetime.utcnow()
-        attempt_perf = time.perf_counter()
+        shot_perf = time.perf_counter()
         try:
             async with session.get(url, params=params) as resp:
                 received_at = datetime.utcnow()
                 text = await resp.text()
-                rtt_ms = (time.perf_counter() - attempt_perf) * 1000
+                rtt_ms = (time.perf_counter() - shot_perf) * 1000
                 print(
-                    f"Reserve attempt {attempt} SENT at {sent_at.isoformat()} - "
+                    f"Reserve attempt {shot_id} SENT at {sent_at.isoformat()} - "
                     f"RESPONSE {resp.status} at {received_at.isoformat()} - "
                     f"Date: {resp.headers.get('Date')}"
                 )
-                print(f"Reserve attempt {attempt} response: {text[:300]}")
+                print(f"Reserve attempt {shot_id} response: {text[:300]}")
 
                 try:
                     data = json.loads(text)
                 except json.JSONDecodeError:
-                    log_debug(
-                        "reserve_attempt_non_json",
-                        attempt=attempt,
-                        booking_id=booking_id,
-                        status=resp.status,
-                        rtt_ms=round(rtt_ms, 2),
-                        response_preview=response_preview(text),
-                    )
-                    continue
+                    log_debug("reserve_attempt_non_json", attempt=shot_id,
+                              booking_id=booking_id, status=resp.status,
+                              rtt_ms=round(rtt_ms, 2),
+                              response_preview=response_preview(text))
+                    return
 
                 booking = data.get("booking") or {}
                 log_debug(
                     "reserve_attempt",
-                    attempt=attempt,
-                    booking_id=booking_id,
-                    status=resp.status,
-                    rtt_ms=round(rtt_ms, 2),
+                    attempt=shot_id, booking_id=booking_id,
+                    status=resp.status, rtt_ms=round(rtt_ms, 2),
                     sent_at=sent_at.isoformat(),
                     received_at=received_at.isoformat(),
                     response_date=resp.headers.get("Date"),
@@ -602,42 +617,82 @@ async def try_reserve_booking(session, booking_id, room_number="", anonymous_id=
                     booking=summarize_booking(booking),
                     response_preview=response_preview(text),
                 )
-                if data.get("success") == "ok" and booking.get("id") == booking_id:
-                    # Ownership check: if another session already owns this slot,
-                    # don't waste time on add-to-cart — it will fail.
-                    slot_owner = booking.get("slot1_booked_user_id")
-                    if slot_owner and anonymous_id and slot_owner != anonymous_id:
-                        print(
-                            f"Reserve returned ok but slot owned by {slot_owner[:8]}… "
-                            f"(ours: {anonymous_id[:8]}…); skipping."
-                        )
-                        log_debug(
-                            "reserve_owned_by_other",
-                            booking_id=booking_id,
-                            slot_owner=slot_owner,
-                            anonymous_id=anonymous_id,
-                            slot1_status=booking.get("slot1_status"),
-                        )
-                        return None
-                    return {
-                        "attempt": attempt,
+
+                if data.get("success") != "ok" or booking.get("id") != booking_id:
+                    return
+
+                slot_status = booking.get("slot1_status")
+                slot_owner = booking.get("slot1_booked_user_id")
+
+                # Pre-window: slot still open, window hasn't started.
+                if slot_status in (None, 1) and not slot_owner:
+                    log_debug("reserve_pre_window", attempt=shot_id,
+                              booking_id=booking_id, slot1_status=slot_status)
+                    return
+
+                # Another session owns this slot.
+                if slot_owner and anonymous_id and slot_owner != anonymous_id:
+                    print(
+                        f"Reserve returned ok but slot owned by {slot_owner[:8]}… "
+                        f"(ours: {anonymous_id[:8]}…); skipping."
+                    )
+                    log_debug("reserve_owned_by_other", booking_id=booking_id,
+                              slot_owner=slot_owner, anonymous_id=anonymous_id,
+                              slot1_status=slot_status)
+                    owned_by_other = True
+                    return
+
+                # We got the reservation.
+                if result is None:
+                    result = {
+                        "attempt": shot_id,
                         "status": resp.status,
                         "text": text,
                         "sent_at": sent_at,
                         "received_at": received_at,
                     }
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            print(f"Reserve attempt {attempt} failed: {e}")
-            log_debug(
-                "reserve_attempt_exception",
-                attempt=attempt,
-                booking_id=booking_id,
-                error=str(e),
-                traceback=traceback.format_exc(),
-            )
+            print(f"Reserve attempt {shot_id} failed: {e}")
+            log_debug("reserve_attempt_exception", attempt=shot_id,
+                      booking_id=booking_id, error=str(e),
+                      traceback=traceback.format_exc())
 
-    print(f"Could not reserve booking {booking_id}. Attempts: {attempt}.")
-    log_debug("reserve_exhausted", booking_id=booking_id, attempts=attempt)
+    # Main dispatch loop — keeps RESERVE_IN_FLIGHT requests in the air
+    while time.perf_counter() < deadline and result is None and not owned_by_other:
+        # Reap completed tasks
+        done = {t for t in active_tasks if t.done()}
+        active_tasks -= done
+
+        # Launch new requests up to the concurrency cap
+        while len(active_tasks) < RESERVE_IN_FLIGHT and time.perf_counter() < deadline:
+            attempt_counter += 1
+            task = asyncio.ensure_future(_fire(attempt_counter))
+            active_tasks.add(task)
+            # Stagger launches so they arrive at slightly different server times
+            await asyncio.sleep(STAGGER_MS / 1000.0)
+            if result is not None or owned_by_other:
+                break
+
+        # Brief yield to let in-flight responses land
+        if active_tasks and result is None and not owned_by_other:
+            await asyncio.sleep(0.005)
+
+    # Cancel stragglers
+    for task in active_tasks:
+        task.cancel()
+    if active_tasks:
+        await asyncio.gather(*active_tasks, return_exceptions=True)
+
+    if result:
+        print(f"Reserve succeeded on attempt {result['attempt']}.")
+        return result
+    if owned_by_other:
+        return None
+
+    print(f"Could not reserve booking {booking_id}. Attempts: {attempt_counter}.")
+    log_debug("reserve_exhausted", booking_id=booking_id, attempts=attempt_counter)
     return None
 
 

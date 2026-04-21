@@ -199,14 +199,14 @@ function BottomNav({ userRole, handleLogout }) {
         to="/"
         className={isActive('/') ? 'bottom-nav-link active' : 'bottom-nav-link'}
       >
-        New Booking
+        Book
       </Link>
 
       <Link
         to="/bookings"
         className={isActive('/bookings') ? 'bottom-nav-link active' : 'bottom-nav-link'}
       >
-        Confirmed
+        Booked
       </Link>
 
       {userRole === 'admin' && (
