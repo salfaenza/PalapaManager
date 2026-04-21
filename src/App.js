@@ -11,6 +11,7 @@ import { GoogleOAuthProvider, GoogleLogin, googleLogout } from '@react-oauth/goo
 import { jwtDecode } from 'jwt-decode'; // <-- named export for v4.x
 import BookingForm from './BookingForm';
 import BookingsTable from './BookingsTable';
+import BookingResults from './BookingResults';
 import UserManagement from './UserManagement';
 import LogsPage from './LogsPage';
 import './App.css';
@@ -150,6 +151,14 @@ function App() {
             </div>
           }
         />
+        <Route
+          path="/bookings"
+          element={
+            <div className="page">
+              <BookingResults token={token} />
+            </div>
+          }
+        />
 
         {userRole === 'admin' && (
           <>
@@ -191,6 +200,13 @@ function BottomNav({ userRole, handleLogout }) {
         className={isActive('/') ? 'bottom-nav-link active' : 'bottom-nav-link'}
       >
         Book
+      </Link>
+
+      <Link
+        to="/bookings"
+        className={isActive('/bookings') ? 'bottom-nav-link active' : 'bottom-nav-link'}
+      >
+        Bookings
       </Link>
 
       {userRole === 'admin' && (

@@ -77,7 +77,10 @@ jobs:
               AiohttpLayerArn=${{ secrets.AIOHTTP_LAYER_ARN }} \
               PytzLayerArn=${{ secrets.PYTZ_LAYER_ARN }} \
               RequestsLayerArn=${{ secrets.REQUESTS_LAYER_ARN }} \
-              CreateDynamoDBTables=true
+              CreateDynamoDBTables=true \
+              TwilioAccountSid=${{ secrets.TWILIO_ACCOUNT_SID }} \
+              TwilioAuthToken=${{ secrets.TWILIO_AUTH_TOKEN }} \
+              TwilioFromNumber=${{ secrets.TWILIO_FROM_NUMBER }}
 
       - name: Print API URL
         run: |

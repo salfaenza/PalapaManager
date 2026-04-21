@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import re
@@ -13,8 +14,10 @@ from botocore.exceptions import ClientError
 dynamodb = boto3.resource("dynamodb")
 USERS_TABLE_NAME = os.environ.get("PALAPA_USERS_TABLE", "palapa-users")
 PROFILES_TABLE_NAME = os.environ.get("PALAPA_PROFILES_TABLE", "palapa-profiles")
+BOOKING_RESULTS_TABLE_NAME = os.environ.get("PALAPA_BOOKING_RESULTS_TABLE", "palapa-booking-results")
 users_table = dynamodb.Table(USERS_TABLE_NAME)
 profiles_table = dynamodb.Table(PROFILES_TABLE_NAME)
+booking_results_table = dynamodb.Table(BOOKING_RESULTS_TABLE_NAME)
 
 scheduler = boto3.client("scheduler")
 lambda_client = boto3.client("lambda")
@@ -51,7 +54,7 @@ DEFAULT_SAME_DAY_BOOKING_TIME = "07:00"
 # giving it time to initialize the HTTP session before the window opens.
 LEAD_TIME_SECONDS = 15
 
-PROFILE_FIELDS = {"first", "last", "name", "room", "email", "phone"}
+PROFILE_FIELDS = {"first", "last", "name", "room", "email", "phone", "notification_phone"}
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +115,13 @@ def lambda_handler(event, context):
     # Palapas/availability
     if method == "GET" and path == "/palapas":
         return handle_get_palapas(event)
+
+    # Booking results (completed bookings from iPoolside)
+    if method == "GET" and path == "/booking-results":
+        return handle_list_booking_results(email, role)
+    if method == "POST" and re.match(r"^/booking-results/[^/]+/cancel$", path):
+        result_id = path.split("/")[2]
+        return handle_cancel_booking_result(result_id, email, role)
 
     # Bookings
     if method == "GET" and path == "/bookings":
@@ -243,7 +253,7 @@ def get_profile_item(email):
 
 
 def empty_profile(email):
-    return {"email": email, "first": "", "last": "", "name": "", "room": "", "phone": ""}
+    return {"email": email, "first": "", "last": "", "name": "", "room": "", "phone": "", "notification_phone": ""}
 
 
 def upsert_profile_fields(email, updates):
@@ -638,23 +648,33 @@ def handle_create_booking(event, email):
         return cors_response(400, {"error": "Invalid JSON body"})
 
     debug_mode = parse_bool(data.get("debug_mode"))
-    book_date = (data.get("book_date") or default_book_date()).strip()
+
+    # Multi-day support: accept book_dates array or single book_date
+    book_dates = data.get("book_dates") or []
+    if not book_dates:
+        single = (data.get("book_date") or default_book_date()).strip()
+        book_dates = [single]
+    for bd in book_dates:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(bd).strip()):
+            return cors_response(400, {"error": f"Invalid date format: {bd}"})
+    book_dates = [str(bd).strip() for bd in book_dates]
+
     hut_choices = normalize_hut_choices(data.get("hut_choices") or (
         [data.get("hut_number")] if data.get("hut_number") else []
     ))
     if not hut_choices:
         return cors_response(400, {"error": "At least one hut must be chosen"})
 
-    # Auto-assign a profile
-    prof = pick_available_profile(email, book_date)
-    if not prof:
-        return cors_response(409, {
-            "error": "No available profiles. Each profile can only be used once per day. Add another profile."
-        })
+    # Check availability against the first date
+    first_date = book_dates[0]
+    palapas = fetch_palapa_options(first_date)
 
-    # Re-check server-side availability
-    palapas = fetch_palapa_options(book_date)
-    locks = internal_locks_for_date(book_date)
+    # Validate all hut choices share the same booking window time
+    window_err = validate_same_booking_window(palapas, hut_choices)
+    if window_err:
+        return cors_response(400, window_err)
+
+    locks = internal_locks_for_date(first_date)
     selected, unavailable = select_first_available_choice(palapas, locks, hut_choices)
     if selected is None:
         return cors_response(409, {
@@ -666,49 +686,72 @@ def handle_create_booking(event, email):
     booking_time = selected.get("booking_time", DEFAULT_ADVANCE_BOOKING_TIME)
     palapatype = selected.get("palapatype_name", "")
 
-    first = prof.get("first", "")
-    last = prof.get("last", "")
-    prof_name = prof.get("name") or f"{first} {last}".strip()
+    created = []
+    errors = []
+    for book_date in book_dates:
+        # Auto-assign a profile for this date
+        prof = pick_available_profile(email, book_date)
+        if not prof:
+            errors.append({
+                "book_date": book_date,
+                "error": "No available profile for this date",
+            })
+            continue
 
-    booking_id = str(uuid.uuid4())
-    schedule_name = build_schedule_name(last, primary, booking_time, booking_id)
+        first = prof.get("first", "")
+        last = prof.get("last", "")
+        prof_name = prof.get("name") or f"{first} {last}".strip()
 
-    payload = {
-        "id": booking_id,
-        "schedule_name": schedule_name,
-        "book_date": book_date,
-        "hut_choices": hut_choices,
-        "hut_number": primary,
-        "palapatype_name": palapatype,
-        "booking_time": booking_time,
-        "profile_email": prof.get("email", email),
-        "profile_id": prof.get("id", prof.get("email", email)),
-        "creator_email": email,
-        "first": first,
-        "last": last,
-        "name": prof_name,
-        "email": prof.get("email", email),
-        "phone": prof.get("phone", ""),
-        "room": prof.get("room", ""),
-        "created_at": datetime.utcnow().isoformat(),
-        "debug_mode": debug_mode,
-    }
+        booking_id = str(uuid.uuid4())
+        schedule_name = build_schedule_name(last, primary, booking_time, booking_id)
 
-    try:
-        schedule_one_time_job(schedule_name, payload, book_date, booking_time, palapatype, debug_mode)
-    except Exception as e:
-        print("Error scheduling job:", str(e))
-        return cors_response(500, {"error": str(e)})
+        payload = {
+            "id": booking_id,
+            "schedule_name": schedule_name,
+            "book_date": book_date,
+            "hut_choices": hut_choices,
+            "hut_number": primary,
+            "palapatype_name": palapatype,
+            "booking_time": booking_time,
+            "profile_email": prof.get("email", email),
+            "profile_id": prof.get("id", prof.get("email", email)),
+            "creator_email": email,
+            "first": first,
+            "last": last,
+            "name": prof_name,
+            "email": prof.get("email", email),
+            "phone": prof.get("phone", ""),
+            "room": prof.get("room", ""),
+            "created_at": datetime.utcnow().isoformat(),
+            "debug_mode": debug_mode,
+        }
+
+        try:
+            schedule_one_time_job(schedule_name, payload, book_date, booking_time, palapatype, debug_mode)
+            created.append({
+                "book_date": book_date,
+                "id": booking_id,
+                "schedule_name": schedule_name,
+                "profile_name": prof_name,
+            })
+        except Exception as e:
+            print(f"Error scheduling job for {book_date}:", str(e))
+            errors.append({"book_date": book_date, "error": str(e)})
+
+    if not created:
+        return cors_response(500 if errors else 409, {
+            "error": "No bookings could be scheduled",
+            "errors": errors,
+        })
 
     return cors_response(200, {
-        "message": "Booking scheduled",
+        "message": f"{len(created)} booking(s) scheduled",
         "booking_time": booking_time,
-        "id": booking_id,
-        "schedule_name": schedule_name,
-        "book_date": book_date,
+        "book_dates": [c["book_date"] for c in created],
         "hut_choices": hut_choices,
-        "profile_name": prof_name,
         "debug_mode": debug_mode,
+        "created": created,
+        "errors": errors,
     })
 
 
@@ -764,6 +807,12 @@ def handle_update_booking(event, email, schedule_name):
     debug_mode = parse_bool(data.get("debug_mode", current_payload.get("debug_mode", False)))
 
     palapas = fetch_palapa_options(book_date)
+
+    # Validate all hut choices share the same booking window time
+    window_err = validate_same_booking_window(palapas, hut_choices)
+    if window_err:
+        return cors_response(400, window_err)
+
     locks = internal_locks_for_date(book_date)
     # Exclude this schedule's own lock when re-checking
     for hut in hut_choices_from_payload(current_payload):
@@ -842,6 +891,12 @@ def handle_book_now(event, email):
     debug_mode = parse_bool(data.get("debug_mode"))
 
     palapas = fetch_palapa_options(book_date)
+
+    # Validate all hut choices share the same booking window time
+    window_err = validate_same_booking_window(palapas, hut_choices)
+    if window_err:
+        return cors_response(400, window_err)
+
     locks = internal_locks_for_date(book_date)
     selected, unavailable = select_first_available_choice(palapas, locks, hut_choices)
     if selected is None:
@@ -920,6 +975,125 @@ def handle_book_now(event, email):
     })
 
 
+# ---------------------------------------------------------------------------
+# Booking results handlers (completed iPoolside bookings)
+# ---------------------------------------------------------------------------
+
+def handle_list_booking_results(email, role):
+    """List completed booking results. Admins see all; users see their own."""
+    try:
+        result = booking_results_table.scan()
+        items = result.get("Items", [])
+        if role != "admin":
+            items = [i for i in items if i.get("creator_email") == email]
+        # Sort by created_at descending
+        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return cors_response(200, items)
+    except Exception as e:
+        print("Error listing booking results:", str(e))
+        return cors_response(500, {"error": str(e)})
+
+
+def handle_cancel_booking_result(result_id, email, role):
+    """Cancel a booking on iPoolside by proxying through our backend."""
+    # Look up the booking result
+    try:
+        res = booking_results_table.get_item(Key={"id": result_id})
+        item = res.get("Item")
+    except Exception as e:
+        print(f"Error fetching booking result {result_id}:", str(e))
+        return cors_response(500, {"error": str(e)})
+
+    if not item:
+        return cors_response(404, {"error": "Booking result not found"})
+
+    # Authorization check
+    if role != "admin" and item.get("creator_email") != email:
+        return cors_response(403, {"error": "Not your booking"})
+
+    if item.get("status") == "cancelled":
+        return cors_response(400, {"error": "Booking already cancelled"})
+
+    ipoolside_booking_id = item.get("ipoolside_booking_id")
+    if not ipoolside_booking_id:
+        return cors_response(400, {"error": "No iPoolside booking ID stored for this booking"})
+
+    # Build login token from profile email + slot1_transaction_at
+    profile_email = item.get("profile_email", "")
+    slot1_txn_at = item.get("slot1_transaction_at", "")
+    if not profile_email or not slot1_txn_at:
+        return cors_response(400, {
+            "error": "Missing profile email or transaction timestamp — cannot authenticate with iPoolside"
+        })
+
+    try:
+        txn_clean = slot1_txn_at.replace("Z", "+00:00")
+        txn_dt = datetime.fromisoformat(txn_clean)
+        txn_str = txn_dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        txn_str = slot1_txn_at
+
+    token = base64.b64encode(f"{profile_email}|{txn_str}".encode()).decode().rstrip("=")
+
+    # Authenticate with iPoolside and cancel the booking
+    try:
+        s = requests.Session()
+        # Login to get session cookies
+        login_url = f"{BASE_URL}/api/auth/login-user-from-email/{token}"
+        login_resp = s.get(login_url, timeout=15, allow_redirects=False)
+        print(f"iPoolside login response: {login_resp.status_code}")
+
+        # Establish session
+        s.get(f"{BASE_URL}/api/auth/sites-session", timeout=10)
+        login_session_resp = s.get(f"{BASE_URL}/api/auth/login-session", timeout=10)
+        try:
+            csrf_token = login_session_resp.json().get("csrf_token")
+        except Exception:
+            csrf_token = None
+        csrf_token = csrf_token or s.cookies.get("csrftoken")
+
+        s.headers.update({
+            "Accept": "*/*",
+            "X-CSRFToken": csrf_token or "",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+
+        # Cancel the booking
+        cancel_url = f"{BASE_URL}/api/palapa/booking/cancel-booking/{ipoolside_booking_id}"
+        cancel_resp = s.get(cancel_url, timeout=15)
+        print(f"iPoolside cancel response: {cancel_resp.status_code} {cancel_resp.text[:300]}")
+
+        try:
+            cancel_data = cancel_resp.json()
+        except Exception:
+            cancel_data = {"raw": cancel_resp.text[:300]}
+
+        if cancel_resp.status_code == 200:
+            # Update status in DynamoDB
+            booking_results_table.update_item(
+                Key={"id": result_id},
+                UpdateExpression="SET #s = :s, #ca = :ca",
+                ExpressionAttributeNames={"#s": "status", "#ca": "cancelled_at"},
+                ExpressionAttributeValues={
+                    ":s": "cancelled",
+                    ":ca": datetime.utcnow().isoformat(),
+                },
+            )
+            return cors_response(200, {
+                "message": "Booking cancelled successfully",
+                "ipoolside_response": cancel_data,
+            })
+        else:
+            return cors_response(502, {
+                "error": "iPoolside cancel request failed",
+                "status": cancel_resp.status_code,
+                "detail": cancel_data,
+            })
+    except Exception as e:
+        print(f"Error cancelling booking on iPoolside: {e}")
+        return cors_response(500, {"error": f"Cancel failed: {str(e)}"})
+
+
 def parse_booking_input(data, creator_email, existing=None):
     """Validate booking form data and return normalized fields.
     Raises ValueError for bad input."""
@@ -986,6 +1160,26 @@ def normalize_hut_choices(raw):
         seen.add(key)
         result.append(key)
     return result
+
+
+def validate_same_booking_window(palapas, hut_choices):
+    """Return an error dict if hut_choices span different booking windows, else None."""
+    by_name = {str(p.get("name")): p for p in palapas}
+    times = {}
+    for hut in hut_choices:
+        p = by_name.get(str(hut))
+        if not p:
+            continue
+        bt = p.get("booking_time", DEFAULT_ADVANCE_BOOKING_TIME)
+        times[hut] = bt
+    unique_times = set(times.values())
+    if len(unique_times) > 1:
+        return {
+            "error": "All selected huts must share the same booking window time. "
+                     "Mixing hut types with different opening times would cause backups to fail.",
+            "hut_times": times,
+        }
+    return None
 
 
 def select_first_available_choice(palapas, locks, hut_choices):

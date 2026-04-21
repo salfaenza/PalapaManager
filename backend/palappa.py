@@ -27,6 +27,11 @@ DEBUG_LOGGING = ContextVar(
 )
 
 PROFILES_TABLE_NAME = os.environ.get("PALAPA_PROFILES_TABLE", "palapa-profiles")
+BOOKING_RESULTS_TABLE_NAME = os.environ.get("PALAPA_BOOKING_RESULTS_TABLE", "palapa-booking-results")
+
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM_NUMBER = os.environ.get("TWILIO_FROM_NUMBER", "")
 
 
 def _profiles_table():
@@ -34,6 +39,67 @@ def _profiles_table():
     that don't need AWS don't blow up."""
     import boto3
     return boto3.resource("dynamodb").Table(PROFILES_TABLE_NAME)
+
+
+def _booking_results_table():
+    """Return a boto3 DDB Table for booking results. Lazy import."""
+    import boto3
+    return boto3.resource("dynamodb").Table(BOOKING_RESULTS_TABLE_NAME)
+
+
+def save_booking_result(event, profile, booking_date, selected_hut,
+                        ipoolside_booking_id, order_number, verified,
+                        manage_url, slot1_transaction_at):
+    """Persist a completed booking result to DynamoDB."""
+    booking_id = event.get("id") or str(int(time.time()))
+    item = {
+        "id": booking_id,
+        "ipoolside_booking_id": ipoolside_booking_id or "",
+        "book_date": booking_date,
+        "hut": str(selected_hut),
+        "hut_choices": event.get("hut_choices") or [str(selected_hut)],
+        "order_number": order_number or "",
+        "verified": verified,
+        "status": "confirmed",
+        "manage_url": manage_url or "",
+        "slot1_transaction_at": slot1_transaction_at or "",
+        "profile_email": profile.get("email", ""),
+        "profile_name": profile.get("name", ""),
+        "creator_email": event.get("creator_email", profile.get("email", "")),
+        "schedule_name": event.get("schedule_name", ""),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        _booking_results_table().put_item(Item=item)
+        print(f"Booking result saved: {booking_id}")
+        log_debug("booking_result_saved", id=booking_id, hut=selected_hut)
+    except Exception as e:
+        print(f"Failed to save booking result: {e}")
+        log_debug("booking_result_save_failed", error=str(e))
+
+
+async def send_sms_notification(message, to_phone):
+    """Send an SMS via Twilio REST API. Skips silently if Twilio is not configured."""
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, to_phone]):
+        print("SMS skipped — Twilio not configured or no notification phone")
+        return
+
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+    auth = aiohttp.BasicAuth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    form = aiohttp.FormData()
+    form.add_field("From", TWILIO_FROM_NUMBER)
+    form.add_field("To", to_phone)
+    form.add_field("Body", message)
+
+    try:
+        async with aiohttp.ClientSession() as sms_session:
+            async with sms_session.post(url, data=form, auth=auth) as resp:
+                text = await resp.text()
+                print(f"SMS sent: {resp.status} {text[:200]}")
+                log_debug("sms_sent", status=resp.status, to=redact_value(to_phone))
+    except Exception as e:
+        print(f"SMS notification failed: {e}")
+        log_debug("sms_failed", error=str(e))
 
 
 def resolve_profile(event):
@@ -71,6 +137,7 @@ def resolve_profile(event):
         "email": prefer("email") or profile_email or "",
         "phone": prefer("phone"),
         "room": prefer("room"),
+        "notification_phone": prefer("notification_phone"),
     }
 
 
@@ -765,6 +832,12 @@ async def main(event, context):
         if not confirmed:
             print("Exhausted all hut choices without a successful booking.")
             log_debug("lambda_exit_no_hut_succeeded", hut_choices=hut_choices)
+            notify_phone = profile.get("notification_phone", "")
+            await send_sms_notification(
+                f"Palapa booking FAILED for {booking_date}. "
+                f"All {len(hut_choices)} hut(s) were taken: {', '.join(hut_choices)}",
+                notify_phone,
+            )
             return
 
         # Parse confirmation details
@@ -812,14 +885,15 @@ async def main(event, context):
             log_debug("verify_failed", error=str(e))
 
         # Build management link from the add-to-cart response (has slot1_transaction_at)
+        slot1_txn_at = ""
         booked_email = profile.get("email", "")
         if booked_email and cart_text:
             try:
                 cart_data = json.loads(cart_text)
                 cart_booking = cart_data.get("booking") or {}
-                txn_at = cart_booking.get("slot1_transaction_at") or ""
-                if txn_at:
-                    txn_clean = txn_at.replace("Z", "+00:00")
+                slot1_txn_at = cart_booking.get("slot1_transaction_at") or ""
+                if slot1_txn_at:
+                    txn_clean = slot1_txn_at.replace("Z", "+00:00")
                     txn_dt = datetime.fromisoformat(txn_clean)
                     txn_str = txn_dt.strftime("%Y-%m-%d %H:%M:%S")
                     token = base64.b64encode(
@@ -830,6 +904,27 @@ async def main(event, context):
                     log_debug("management_link", manage_url=manage_url)
             except Exception as e:
                 print(f"Could not build management link: {e}")
+
+        # Persist booking result to DynamoDB
+        save_booking_result(
+            event, profile, booking_date, selected_hut,
+            ipoolside_booking_id=str(selected_booking_id),
+            order_number=order_number,
+            verified=verified,
+            manage_url=manage_url,
+            slot1_transaction_at=slot1_txn_at,
+        )
+
+        # SMS notification on success
+        notify_phone = profile.get("notification_phone", "")
+        sms_body = f"Palapa booked! Hut {selected_hut} for {booking_date}."
+        if order_number:
+            sms_body += f" Order: {order_number}"
+        if not verified:
+            sms_body += " (unverified — check iPoolside)"
+        if manage_url:
+            sms_body += f"\nManage: {manage_url}"
+        await send_sms_notification(sms_body, notify_phone)
 
         end_time = datetime.utcnow()
         print("Book time:", (end_time - book_time).total_seconds())

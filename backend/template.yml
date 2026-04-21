@@ -29,11 +29,31 @@ Parameters:
     Type: String
     Default: palapa-profiles
 
+  BookingResultsTableName:
+    Type: String
+    Default: palapa-booking-results
+
   CreateDynamoDBTables:
     Type: String
     Default: 'false'
     AllowedValues: ['true', 'false']
     Description: Set to true only on first deploy to a fresh account (tables don't exist yet)
+
+  TwilioAccountSid:
+    Type: String
+    Default: ''
+    Description: Twilio Account SID for SMS notifications (leave empty to disable)
+
+  TwilioAuthToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Twilio Auth Token
+
+  TwilioFromNumber:
+    Type: String
+    Default: ''
+    Description: Twilio phone number to send SMS from (e.g. +1234567890)
 
   ScheduleGroup:
     Type: String
@@ -83,6 +103,21 @@ Resources:
         - AttributeName: email
           KeyType: HASH
 
+  BookingResultsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: ShouldCreateTables
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref BookingResultsTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
   # ============================================================
   # IAM Roles
   # ============================================================
@@ -117,6 +152,7 @@ Resources:
                 Resource:
                   - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${UsersTableName}
                   - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProfilesTableName}
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${BookingResultsTableName}
               - Sid: Scheduler
                 Effect: Allow
                 Action:
@@ -168,6 +204,13 @@ Resources:
                   - dynamodb:Scan
                 Resource:
                   - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProfilesTableName}
+              - Sid: DynamoDBWriteResults
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${BookingResultsTableName}
 
   # Role for EventBridge Scheduler to invoke the executor Lambdas
   SchedulerInvokeRole:
@@ -217,6 +260,7 @@ Resources:
           PALAPA_DEBUG_TARGET_LAMBDA_ARN: !GetAtt DebugExecutorFunction.Arn
           PALAPA_INVOKE_ROLE_ARN: !GetAtt SchedulerInvokeRole.Arn
           PALAPA_SCHEDULE_GROUP: !Ref ScheduleGroup
+          PALAPA_BOOKING_RESULTS_TABLE: !Ref BookingResultsTableName
 
   ExecutorFunction:
     Type: AWS::Lambda::Function
@@ -232,6 +276,12 @@ Resources:
       Layers:
         - !Ref AiohttpLayerArn
         - !Ref PytzLayerArn
+      Environment:
+        Variables:
+          PALAPA_BOOKING_RESULTS_TABLE: !Ref BookingResultsTableName
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_FROM_NUMBER: !Ref TwilioFromNumber
 
   DebugExecutorFunction:
     Type: AWS::Lambda::Function
@@ -247,6 +297,12 @@ Resources:
       Layers:
         - !Ref AiohttpLayerArn
         - !Ref PytzLayerArn
+      Environment:
+        Variables:
+          PALAPA_BOOKING_RESULTS_TABLE: !Ref BookingResultsTableName
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_FROM_NUMBER: !Ref TwilioFromNumber
 
   # ============================================================
   # API Gateway (HTTP API)

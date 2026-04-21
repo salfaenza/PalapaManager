@@ -1681,6 +1681,23 @@
 }
 
 
+/* ============================================================
+   Booking Results
+   ============================================================ */
+
+.br-section {
+  margin-bottom: 0.5rem;
+}
+
+.br-card--cancelled {
+  opacity: 0.6;
+  background: var(--clr-surface);
+}
+.br-card--cancelled:hover {
+  box-shadow: none;
+}
+
+
 /* ---------- Responsive ---------- */
 @media (max-width: 600px) {
   .page { padding: 0.6rem 0.6rem calc(var(--nav-height) + 1rem); }

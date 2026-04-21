@@ -53,13 +53,14 @@ export default function BookingForm({ triggerRefresh, token }) {
   const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
   const [bookDate, setBookDate] = useState(todayIsoInAruba(1));
+  const [endDate, setEndDate] = useState('');
 
   // Multi-profile state
   const [profiles, setProfiles] = useState([]);
   const [profilesLoading, setProfilesLoading] = useState(true);
   const [profileError, setProfileError] = useState('');
   const [editingProfile, setEditingProfile] = useState(null); // null | 'new' | profile id
-  const [profileForm, setProfileForm] = useState({ first: '', last: '', email: '', phone: '', room: '' });
+  const [profileForm, setProfileForm] = useState({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '' });
   const [profileSaving, setProfileSaving] = useState(false);
 
   const [palapas, setPalapas] = useState([]);
@@ -89,6 +90,21 @@ export default function BookingForm({ triggerRefresh, token }) {
   // Onboarding wizard — null = normal mode, 1/2/3 = guided step
   const [onboardingStep, setOnboardingStep] = useState(null);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+
+  // Generate array of dates from range
+  const bookDates = useMemo(() => {
+    if (!endDate || endDate <= bookDate) return [bookDate];
+    const dates = [];
+    let d = new Date(bookDate + 'T12:00:00');
+    const end = new Date(endDate + 'T12:00:00');
+    while (d <= end) {
+      dates.push(d.toISOString().split('T')[0]);
+      d.setDate(d.getDate() + 1);
+    }
+    return dates;
+  }, [bookDate, endDate]);
+
+  const isMultiDay = bookDates.length > 1;
 
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
 
@@ -124,19 +140,19 @@ export default function BookingForm({ triggerRefresh, token }) {
   // --- Profile CRUD ---
   const startAddProfile = () => {
     setEditingProfile('new');
-    setProfileForm({ first: '', last: '', email: '', phone: '', room: '' });
+    setProfileForm({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '' });
     setProfileError('');
   };
 
   const startEditProfile = (p) => {
     setEditingProfile(p.id);
-    setProfileForm({ first: p.first || '', last: p.last || '', email: p.email || '', phone: p.phone || '', room: p.room || '' });
+    setProfileForm({ first: p.first || '', last: p.last || '', email: p.email || '', phone: p.phone || '', room: p.room || '', notification_phone: p.notification_phone || '' });
     setProfileError('');
   };
 
   const cancelEditProfile = () => {
     setEditingProfile(null);
-    setProfileForm({ first: '', last: '', email: '', phone: '', room: '' });
+    setProfileForm({ first: '', last: '', email: '', phone: '', room: '', notification_phone: '' });
     setProfileError('');
   };
 
@@ -238,6 +254,19 @@ export default function BookingForm({ triggerRefresh, token }) {
 
   const types = useMemo(() => [...new Set(palapas.map(p => p.palapatype_name).filter(Boolean))], [palapas]);
 
+  // Lock palapa type to match the first selected hut — backups must share the same booking window
+  const lockedType = useMemo(() => {
+    if (!hutChoices.length || !palapas.length) return null;
+    const first = palapas.find(p => String(p.name) === hutChoices[0]);
+    return first?.palapatype_name || null;
+  }, [hutChoices, palapas]);
+
+  // Auto-set type filter when first hut is selected; reset when all removed
+  useEffect(() => {
+    if (lockedType) setTypeFilter(lockedType);
+    else if (hutChoices.length === 0) setTypeFilter('all');
+  }, [lockedType, hutChoices.length]);
+
   const filteredPalapas = useMemo(() => {
     let pool = showUnavailable ? palapas : availablePalapas;
     if (typeFilter !== 'all') pool = pool.filter(p => p.palapatype_name === typeFilter);
@@ -298,7 +327,16 @@ export default function BookingForm({ triggerRefresh, token }) {
   }, [API, authHeaders]);
 
   // --- Hut choice ---
-  const addHutChoice = (name) => { if (!name) return; setError(''); setSuccess(''); setHutChoices((prev) => (prev.includes(String(name)) ? prev : [...prev, String(name)])); };
+  const addHutChoice = (name) => {
+    if (!name) return;
+    // Enforce same-type constraint
+    if (lockedType) {
+      const p = palapas.find(pal => String(pal.name) === String(name));
+      if (p && p.palapatype_name !== lockedType) return;
+    }
+    setError(''); setSuccess('');
+    setHutChoices((prev) => (prev.includes(String(name)) ? prev : [...prev, String(name)]));
+  };
   const removeHutChoice = (name) => setHutChoices((prev) => prev.filter((h) => h !== String(name)));
   const moveHutChoice = (name, delta) => setHutChoices((prev) => {
     const idx = prev.indexOf(String(name)); if (idx < 0) return prev;
@@ -307,7 +345,7 @@ export default function BookingForm({ triggerRefresh, token }) {
   });
 
   // --- Submit (profile auto-assigned by backend) ---
-  const submitBody = () => ({ book_date: bookDate, hut_choices: hutChoices, debug_mode: debugMode });
+  const submitBody = () => ({ book_dates: bookDates, hut_choices: hutChoices, debug_mode: debugMode });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -319,9 +357,12 @@ export default function BookingForm({ triggerRefresh, token }) {
       const res = await fetch(`${API}/bookings`, { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(submitBody()) });
       const data = await res.json();
       if (res.ok) {
-        const profileNote = data.profile_name ? ` (profile: ${data.profile_name})` : '';
-        setSuccess((debugMode ? 'Debug booking scheduled!' : 'Booking scheduled!') + profileNote);
-        setHutChoices([]); setHutSearch(''); triggerRefresh?.();
+        const count = data.created?.length || 1;
+        const errCount = data.errors?.length || 0;
+        let msg = count > 1 ? `${count} bookings scheduled!` : (debugMode ? 'Debug booking scheduled!' : 'Booking scheduled!');
+        if (errCount > 0) msg += ` (${errCount} date(s) failed — no available profile)`;
+        setSuccess(msg);
+        setHutChoices([]); setHutSearch(''); setEndDate(''); triggerRefresh?.();
       } else setError(data.error || 'Failed to schedule booking');
     } catch { setError('Network or server error occurred'); }
     finally { setSubmitting(false); }
@@ -334,7 +375,7 @@ export default function BookingForm({ triggerRefresh, token }) {
     setBooking(true); setError(''); setSuccess('');
     setBookingStatus({ state: 'sending', huts: [...hutChoices] });
     try {
-      const res = await fetch(`${API}/bookings/now`, { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(submitBody()) });
+      const res = await fetch(`${API}/bookings/now`, { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ book_date: bookDate, hut_choices: hutChoices, debug_mode: debugMode }) });
       const data = await res.json();
       if (res.ok || res.status === 202) {
         setBookingStatus({ state: 'triggered', huts: data.hut_choices || hutChoices, id: data.id, profileName: data.profile_name, startTime: Date.now() });
@@ -421,8 +462,22 @@ export default function BookingForm({ triggerRefresh, token }) {
   const renderHutSelection = () => (
     <>
       <div className="section">
-        <h3 className="section-heading">Booking Date</h3>
-        <input type="date" value={bookDate} min={todayIsoInAruba(0)} onChange={(e) => { setBookDate(e.target.value); setHutChoices([]); setTypeFilter('all'); }} className="input" />
+        <h3 className="section-heading">Booking Date{isMultiDay ? 's' : ''}</h3>
+        <div className="field-row">
+          <div className="field-group">
+            <label className="label">{endDate ? 'Start date' : 'Date'}</label>
+            <input type="date" value={bookDate} min={todayIsoInAruba(0)} onChange={(e) => { setBookDate(e.target.value); if (endDate && e.target.value > endDate) setEndDate(''); setHutChoices([]); setTypeFilter('all'); }} className="input" />
+          </div>
+          <div className="field-group">
+            <label className="label">End date</label>
+            <input type="date" value={endDate} min={bookDate} onChange={(e) => setEndDate(e.target.value)} className="input" placeholder="Same day" />
+          </div>
+        </div>
+        {isMultiDay && (
+          <p className="text-muted" style={{ marginTop: '0.3rem' }}>
+            {bookDates.length} days: {bookDates[0]} to {bookDates[bookDates.length - 1]}
+          </p>
+        )}
         {palapasDate && <p className="text-muted" style={{ marginTop: '0.3rem' }}>Showing availability for {palapasDate}</p>}
       </div>
 
@@ -453,11 +508,16 @@ export default function BookingForm({ triggerRefresh, token }) {
               <span className="filter-label">Type</span>
               <button type="button" className={`filter-pill ${typeFilter === 'all' ? 'filter-pill--active' : ''}`} onClick={() => setTypeFilter('all')}>All</button>
               {types.map(t => (
-                <button key={t} type="button" className={`filter-pill ${typeFilter === t ? 'filter-pill--active' : ''}`} onClick={() => setTypeFilter(t)}>
+                <button key={t} type="button" className={`filter-pill ${typeFilter === t ? 'filter-pill--active' : ''}`} onClick={() => !lockedType && setTypeFilter(t)} disabled={!!lockedType && t !== lockedType}>
                   {t.replace(/ reservation/i, '')}
                 </button>
               ))}
             </div>
+            {lockedType && (
+              <p className="text-muted" style={{ marginTop: '0.2rem', fontSize: '0.78rem' }}>
+                Backups must be the same type ({lockedType.replace(/ reservation/i, '')}) to share the booking window.
+              </p>
+            )}
           </div>
         )}
 
@@ -483,7 +543,8 @@ export default function BookingForm({ triggerRefresh, token }) {
               {filteredPalapas.map((p) => {
                 const chosenIdx = hutChoices.indexOf(String(p.name));
                 const isChosen = chosenIdx >= 0;
-                const clickable = p.available && !isChosen;
+                const typeMismatch = lockedType && p.palapatype_name !== lockedType;
+                const clickable = p.available && !isChosen && !typeMismatch;
                 const cls = ['hut-pill', isChosen && 'hut-pill--chosen', !p.available && 'hut-pill--unavailable', p.status === 5 && 'hut-pill--staff-hold'].filter(Boolean).join(' ');
                 return (
                   <button type="button" key={`${p.id}-${p.name}`} className={cls} onClick={() => clickable && addHutChoice(p.name)} disabled={!clickable} title={p.lock_reason || p.status_label}>
@@ -583,9 +644,9 @@ export default function BookingForm({ triggerRefresh, token }) {
 
       <div className="action-row">
         <button type="submit" className="btn btn-primary" disabled={submitting || !hutChoices.length}>
-          {submitting ? 'Scheduling...' : 'Schedule'}
+          {submitting ? 'Scheduling...' : isMultiDay ? `Schedule ${bookDates.length} Days` : 'Schedule'}
         </button>
-        <button type="button" onClick={handleBookNow} className={`btn ${bookNowStatus.enabled ? 'btn-accent' : 'btn-ghost'}`} disabled={booking || !hutChoices.length || !bookNowStatus.enabled} title={bookNowStatus.reason}>
+        <button type="button" onClick={handleBookNow} className={`btn ${bookNowStatus.enabled && !isMultiDay ? 'btn-accent' : 'btn-ghost'}`} disabled={booking || !hutChoices.length || !bookNowStatus.enabled || isMultiDay} title={isMultiDay ? 'Book Now only works for single-day bookings' : bookNowStatus.reason}>
           {booking ? 'Booking...' : 'Book Now'}
         </button>
       </div>
@@ -757,9 +818,13 @@ function ProfileFormInline({ form, onChange, onSave, onCancel, saving, error, is
           <input type="text" value={form.room} onChange={(e) => onChange({ ...form, room: e.target.value })} className="input" placeholder="4521" />
         </div>
         <div className="field-group">
-          <label className="label">Phone</label>
+          <label className="label">Phone (for booking)</label>
           <input type="text" value={form.phone} onChange={(e) => onChange({ ...form, phone: e.target.value })} className="input" placeholder="555-123-4567" />
         </div>
+      </div>
+      <div className="field-group">
+        <label className="label">SMS notifications (your cell)</label>
+        <input type="tel" value={form.notification_phone || ''} onChange={(e) => onChange({ ...form, notification_phone: e.target.value })} className="input" placeholder="+1234567890" />
       </div>
       {error && <div className="msg-error">{error}</div>}
       <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem' }}>
