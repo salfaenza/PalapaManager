@@ -13,6 +13,7 @@ export default function BookingResults({ token }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState(null);
+  const [verifyingId, setVerifyingId] = useState(null);
   const [showAll, setShowAll] = useState(false);
 
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
@@ -37,6 +38,26 @@ export default function BookingResults({ token }) {
   }, [authHeaders]);
 
   useEffect(() => { fetchResults(); }, [fetchResults]);
+
+  const handleVerify = async (id) => {
+    setVerifyingId(id);
+    try {
+      const res = await fetch(`${API}/booking-results/${encodeURIComponent(id)}/verify`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      const data = await res.json();
+      if (res.ok) {
+        fetchResults();
+      } else {
+        alert(data.error || 'Failed to verify booking');
+      }
+    } catch {
+      alert('Network error while verifying');
+    } finally {
+      setVerifyingId(null);
+    }
+  };
 
   const handleCancel = async (id) => {
     if (!window.confirm('Cancel this booking on iPoolside? This cannot be undone.')) return;
@@ -96,6 +117,8 @@ export default function BookingResults({ token }) {
                 result={r}
                 onCancel={handleCancel}
                 cancelling={cancellingId === r.id}
+                onVerify={handleVerify}
+                verifying={verifyingId === r.id}
               />
             ))}
           </div>
@@ -116,7 +139,7 @@ export default function BookingResults({ token }) {
   );
 }
 
-function BookingResultCard({ result, onCancel, cancelling }) {
+function BookingResultCard({ result, onCancel, cancelling, onVerify, verifying }) {
   const r = result;
   const isConfirmed = r.status === 'confirmed';
   const isCancelled = r.status === 'cancelled';
@@ -134,6 +157,12 @@ function BookingResultCard({ result, onCancel, cancelling }) {
 
   const cancelledDate = r.cancelled_at
     ? new Date(r.cancelled_at + 'Z').toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      })
+    : '';
+
+  const verifiedAt = r.verified_at
+    ? new Date(r.verified_at + 'Z').toLocaleString(undefined, {
         month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
       })
     : '';
@@ -163,8 +192,15 @@ function BookingResultCard({ result, onCancel, cancelling }) {
         <span className={`badge ${isConfirmed ? 'badge-success' : 'badge-danger'}`}>
           {isConfirmed ? 'Confirmed' : 'Cancelled'}
         </span>
-        {r.verified && isConfirmed && (
-          <span className="badge badge-info" style={{ marginLeft: '0.3rem' }}>Verified</span>
+        {isConfirmed && r.verified && (
+          <span className="badge badge-info" style={{ marginLeft: '0.3rem' }} title={verifiedAt ? `Verified ${verifiedAt}` : ''}>
+            Verified
+          </span>
+        )}
+        {isConfirmed && r.verified === false && r.verified_at && (
+          <span className="badge badge-danger" style={{ marginLeft: '0.3rem' }} title={verifiedAt ? `Checked ${verifiedAt}` : ''}>
+            Not on iPoolside
+          </span>
         )}
       </div>
       {createdDate && (
@@ -180,7 +216,7 @@ function BookingResultCard({ result, onCancel, cancelling }) {
         </div>
       )}
 
-      {isConfirmed && onCancel && (
+      {isConfirmed && (
         <div className="btn-row">
           {r.manage_url && (
             <a
@@ -189,16 +225,27 @@ function BookingResultCard({ result, onCancel, cancelling }) {
               rel="noopener noreferrer"
               className="btn btn-ghost btn-sm"
             >
-              Manage on iPoolside
+              Manage
             </a>
           )}
-          <button
-            onClick={() => onCancel(r.id)}
-            className="btn btn-danger btn-sm"
-            disabled={cancelling}
-          >
-            {cancelling ? 'Cancelling...' : 'Cancel Booking'}
-          </button>
+          {onVerify && (
+            <button
+              onClick={() => onVerify(r.id)}
+              className="btn btn-primary btn-sm"
+              disabled={verifying}
+            >
+              {verifying ? 'Verifying...' : 'Verify'}
+            </button>
+          )}
+          {onCancel && (
+            <button
+              onClick={() => onCancel(r.id)}
+              className="btn btn-danger btn-sm"
+              disabled={cancelling}
+            >
+              {cancelling ? 'Cancelling...' : 'Cancel'}
+            </button>
+          )}
         </div>
       )}
     </div>

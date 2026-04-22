@@ -123,6 +123,9 @@ def lambda_handler(event, context):
     if method == "POST" and re.match(r"^/booking-results/[^/]+/cancel$", path):
         result_id = path.split("/")[2]
         return handle_cancel_booking_result(result_id, email, role)
+    if method == "POST" and re.match(r"^/booking-results/[^/]+/verify$", path):
+        result_id = path.split("/")[2]
+        return handle_verify_booking_result(result_id, email, role)
 
     # Bookings
     if method == "GET" and path == "/bookings":
@@ -1137,6 +1140,123 @@ def handle_cancel_booking_result(result_id, email, role):
     except Exception as e:
         print(f"Error cancelling booking on iPoolside: {e}")
         return cors_response(500, {"error": f"Cancel failed: {str(e)}"})
+
+
+def handle_verify_booking_result(result_id, email, role):
+    """Verify a booking exists on iPoolside by authenticating via the manage
+    link and checking get-my-itinerary for a matching booking."""
+    try:
+        res = booking_results_table.get_item(Key={"id": result_id})
+        item = res.get("Item")
+    except Exception as e:
+        print(f"Error fetching booking result {result_id}:", str(e))
+        return cors_response(500, {"error": str(e)})
+
+    if not item:
+        return cors_response(404, {"error": "Booking result not found"})
+    if role != "admin" and item.get("creator_email") != email:
+        return cors_response(403, {"error": "Not your booking"})
+
+    ipoolside_booking_id = item.get("ipoolside_booking_id")
+    profile_email = item.get("profile_email", "")
+    slot1_txn_at = item.get("slot1_transaction_at", "")
+
+    if not profile_email or not slot1_txn_at:
+        return cors_response(400, {
+            "error": "Missing profile email or transaction timestamp"
+        })
+
+    # Build login token (same as cancel flow)
+    try:
+        txn_clean = slot1_txn_at.replace("Z", "+00:00")
+        txn_dt = datetime.fromisoformat(txn_clean)
+        txn_str = txn_dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        txn_str = slot1_txn_at
+
+    token = base64.b64encode(f"{profile_email}|{txn_str}".encode()).decode().rstrip("=")
+
+    try:
+        s = requests.Session()
+
+        # Full session setup (same as cancel flow)
+        login_url = f"{BASE_URL}/api/auth/login-user-from-email/{token}"
+        s.get(login_url, timeout=15, allow_redirects=False)
+        s.get(BASE_URL, timeout=15)
+        s.get(f"{BASE_URL}/api/auth/sites-session", timeout=10)
+        login_session_resp = s.get(f"{BASE_URL}/api/auth/login-session", timeout=10)
+        try:
+            login_data = login_session_resp.json()
+            csrf_token = login_data.get("csrf_token")
+        except Exception:
+            csrf_token = None
+        csrf_token = csrf_token or s.cookies.get("csrftoken")
+
+        s.headers.update({
+            "Accept": "*/*",
+            "Content-Type": "text/plain;charset=UTF-8",
+            "Origin": BASE_URL,
+            "Referer": f"{BASE_URL}/",
+            "X-CSRFToken": csrf_token or "",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+
+        # Fetch the user's itinerary from iPoolside
+        itin_resp = s.post(
+            f"{BASE_URL}/api/cart/get-my-itinerary", data="{}", timeout=15
+        )
+        print(f"iPoolside itinerary response: {itin_resp.status_code}")
+
+        if itin_resp.status_code != 200:
+            return cors_response(502, {
+                "error": "Failed to fetch itinerary from iPoolside",
+                "status": itin_resp.status_code,
+            })
+
+        itin_data = itin_resp.json()
+        itin_bookings = itin_data.get("bookings", [])
+
+        # Look for our booking by iPoolside booking ID
+        found = None
+        for ib in itin_bookings:
+            if str(ib.get("id")) == str(ipoolside_booking_id):
+                found = ib
+                break
+
+        verified = found is not None and found.get("status") in (2, 50)
+        found_status = found.get("status") if found else None
+        found_hut = found.get("palapa_name") if found else None
+        found_date = found.get("book_date") if found else None
+
+        print(
+            f"VERIFY: booking {ipoolside_booking_id} "
+            f"{'FOUND' if found else 'NOT FOUND'} in itinerary, "
+            f"status={found_status}, verified={verified}"
+        )
+
+        # Update DynamoDB
+        booking_results_table.update_item(
+            Key={"id": result_id},
+            UpdateExpression="SET verified = :v, verified_at = :va",
+            ExpressionAttributeValues={
+                ":v": verified,
+                ":va": datetime.utcnow().isoformat(),
+            },
+        )
+
+        return cors_response(200, {
+            "verified": verified,
+            "ipoolside_booking_id": ipoolside_booking_id,
+            "found_in_itinerary": found is not None,
+            "itinerary_status": found_status,
+            "itinerary_hut": found_hut,
+            "itinerary_date": found_date,
+            "itinerary_count": len(itin_bookings),
+        })
+
+    except Exception as e:
+        print(f"Error verifying booking on iPoolside: {e}")
+        return cors_response(500, {"error": f"Verify failed: {str(e)}"})
 
 
 def parse_booking_input(data, creator_email, existing=None):
