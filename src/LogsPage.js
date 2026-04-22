@@ -6,11 +6,18 @@ const FILTERS = {
   FAILED: 'failed'
 };
 
+function todayAruba() {
+  return new Date(
+    new Date().toLocaleString('en-CA', { timeZone: 'America/Aruba', year: 'numeric', month: '2-digit', day: '2-digit' })
+  ).toISOString().split('T')[0];
+}
+
 export default function LogsPage({ token }) {
   const [streams, setStreams] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState(FILTERS.ALL);
+  const [showAll, setShowAll] = useState(false);
   const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
   const loadLogs = useCallback(async () => {
@@ -38,27 +45,41 @@ export default function LogsPage({ token }) {
     loadLogs();
   }, [loadLogs]);
 
+  const dateFilteredStreams = useMemo(() => {
+    if (showAll) return streams;
+    const todayStart = new Date(todayAruba() + 'T00:00:00').getTime();
+    return streams.filter((s) => s.lastEventTime && s.lastEventTime >= todayStart);
+  }, [streams, showAll]);
+
   const filteredStreams = useMemo(() => {
-    if (filter === FILTERS.ALL) return streams;
-    return streams.filter((s) =>
+    if (filter === FILTERS.ALL) return dateFilteredStreams;
+    return dateFilteredStreams.filter((s) =>
       filter === FILTERS.SUCCESS
         ? checkSuccess(s.messages)
         : !checkSuccess(s.messages)
     );
-  }, [streams, filter]);
+  }, [dateFilteredStreams, filter]);
 
   if (loading) return <div className="centered">Loading logs...</div>;
   if (error) return <div className="logs-error">{error}</div>;
 
   const counts = {
-    total: streams.length,
-    success: streams.filter(s => checkSuccess(s.messages)).length,
-    failed: streams.filter(s => !checkSuccess(s.messages)).length
+    total: dateFilteredStreams.length,
+    success: dateFilteredStreams.filter(s => checkSuccess(s.messages)).length,
+    failed: dateFilteredStreams.filter(s => !checkSuccess(s.messages)).length
   };
 
   return (
     <div className="logs-container">
-      <h2 className="logs-heading">Execution Logs</h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h2 className="logs-heading" style={{ margin: 0 }}>Execution Logs</h2>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setShowAll(prev => !prev)}
+        >
+          {showAll ? 'Today Only' : 'Show All'}
+        </button>
+      </div>
       <FilterBar filter={filter} setFilter={setFilter} counts={counts} />
       {filteredStreams.length === 0 && <div className="centered">No logs found for this filter.</div>}
       {filteredStreams.map((s, idx) => (

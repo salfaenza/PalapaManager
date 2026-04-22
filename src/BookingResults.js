@@ -2,11 +2,18 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
+function todayAruba() {
+  return new Date(
+    new Date().toLocaleString('en-CA', { timeZone: 'America/Aruba', year: 'numeric', month: '2-digit', day: '2-digit' })
+  ).toISOString().split('T')[0];
+}
+
 export default function BookingResults({ token }) {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState(null);
+  const [showAll, setShowAll] = useState(false);
 
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
 
@@ -52,12 +59,23 @@ export default function BookingResults({ token }) {
     }
   };
 
-  const confirmed = results.filter(r => r.status === 'confirmed');
-  const cancelled = results.filter(r => r.status === 'cancelled');
+  const today = todayAruba();
+  const allConfirmed = results.filter(r => r.status === 'confirmed');
+  const allCancelled = results.filter(r => r.status === 'cancelled');
+  const confirmed = showAll ? allConfirmed : allConfirmed.filter(r => r.book_date >= today);
+  const cancelled = showAll ? allCancelled : allCancelled.filter(r => r.book_date >= today);
 
   return (
     <div className="card bookings-wrap">
-      <h2 className="bookings-title">Confirmed Bookings</h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h2 className="bookings-title" style={{ margin: 0 }}>Confirmed Bookings</h2>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setShowAll(prev => !prev)}
+        >
+          {showAll ? 'Today & Future' : 'Show All'}
+        </button>
+      </div>
 
       {loading && <p className="text-muted" style={{ textAlign: 'center' }}>Loading your bookings...</p>}
       {error && <div className="msg-error">{error}</div>}

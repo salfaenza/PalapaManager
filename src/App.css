@@ -921,6 +921,15 @@
   color: var(--clr-text-secondary);
   border: 1px solid var(--clr-border);
 }
+.hut-tag--warn {
+  border: 1.5px solid var(--clr-warn, #e6a700);
+  background: var(--clr-warn-light, #fff8e1);
+}
+.hut-tag-status {
+  font-weight: 500;
+  font-size: 0.72rem;
+  opacity: 0.85;
+}
 .hut-chain .hut-arrow {
   color: var(--clr-text-muted);
   font-size: 0.75rem;

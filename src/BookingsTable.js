@@ -22,6 +22,7 @@ export default function BookingsTable({ token, refreshTrigger }) {
   const [editForm, setEditForm] = useState({});
   const [saving, setSaving] = useState(false);
   const [newHutInput, setNewHutInput] = useState('');
+  const [availByDate, setAvailByDate] = useState({}); // { "2026-04-23": { "303": { available, status_label } } }
 
   const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
@@ -50,6 +51,31 @@ export default function BookingsTable({ token, refreshTrigger }) {
   }, [authHeaders, API]);
 
   useEffect(() => { fetchBookings(); fetchProfiles(); }, [fetchBookings, fetchProfiles, refreshTrigger]);
+
+  // Fetch hut availability for each unique scheduled date
+  useEffect(() => {
+    const dates = [...new Set(bookings.map(b => b.book_date).filter(Boolean))];
+    if (!dates.length) return;
+    let cancelled = false;
+    (async () => {
+      const result = {};
+      for (const date of dates) {
+        if (cancelled) break;
+        try {
+          const res = await fetch(`${API}/palapas?book_date=${date}`, { headers: authHeaders });
+          if (!res.ok) continue;
+          const data = await res.json();
+          const map = {};
+          (data.palapas || []).forEach(p => {
+            map[String(p.name)] = { available: p.available, status_label: p.status_label };
+          });
+          result[date] = map;
+        } catch {}
+      }
+      if (!cancelled) setAvailByDate(result);
+    })();
+    return () => { cancelled = true; };
+  }, [bookings, API, authHeaders]);
 
   // Group bookings by hut choices (same huts in same order = same group)
   const groupedBookings = useMemo(() => {
@@ -234,7 +260,7 @@ export default function BookingsTable({ token, refreshTrigger }) {
               <div className="field-row-inline">
                 <span className="field-label">Huts</span>
                 <span className="field-value">
-                  <HutChain choices={group.hut_choices} />
+                  <HutChain choices={group.hut_choices} availByDate={availByDate} scheduledDates={group.days.map(d => d.book_date)} />
                 </span>
               </div>
               {group.booking_time && (
@@ -386,16 +412,34 @@ function ProfileDropdown({ booking, profiles, usedOnDate, onChange }) {
   );
 }
 
-function HutChain({ choices }) {
+function HutChain({ choices, availByDate = {}, scheduledDates = [] }) {
   if (!choices.length) return <span>{'\u2014'}</span>;
+
+  // Check if any scheduled date has this hut unavailable
+  const getWorstStatus = (hut) => {
+    for (const date of scheduledDates) {
+      const dateMap = availByDate[date];
+      if (!dateMap) continue;
+      const info = dateMap[String(hut)];
+      if (info && !info.available) return info.status_label || 'Unavailable';
+    }
+    return null;
+  };
+
   return (
     <span className="hut-chain">
-      {choices.map((h, idx) => (
-        <Fragment key={h}>
-          {idx > 0 && <span className="hut-arrow">{'\u2192'}</span>}
-          <span className={`hut-tag ${idx === 0 ? 'hut-tag--primary' : 'hut-tag--backup'}`}>{h}</span>
-        </Fragment>
-      ))}
+      {choices.map((h, idx) => {
+        const warn = getWorstStatus(h);
+        return (
+          <Fragment key={h}>
+            {idx > 0 && <span className="hut-arrow">{'\u2192'}</span>}
+            <span className={`hut-tag ${idx === 0 ? 'hut-tag--primary' : 'hut-tag--backup'} ${warn ? 'hut-tag--warn' : ''}`}>
+              {h}
+              {warn && <span className="hut-tag-status" title={warn}> ({warn})</span>}
+            </span>
+          </Fragment>
+        );
+      })}
     </span>
   );
 }
